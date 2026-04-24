@@ -5,6 +5,7 @@ import re
 import time
 
 client = Groq(api_key=Config.GROQ_API_KEY)
+DEFAULT_MODEL = "llama-3.1-8b-instant"
 
 
 def safe_parse_json(text):
@@ -25,53 +26,50 @@ def safe_parse_json(text):
 
 def generate_response(messages, expect_json=False, retries=0):
     """
-    Groq response with multi-model fallback (FREE tier safe)
+    Groq response with single-model call and bounded retry.
     """
-
-    # UPDATED WORKING MODELS (priority order)
-    models = [
-        "llama-3.3-70b-versatile",  # primary supported model
-        "llama-3.1-8b-instant",  # fast supported fallback
-        "openai/gpt-oss-20b",  # lightweight supported fallback
-    ]
-
+    allowed_retries = min(max(retries, 0), 1)
     last_error = None
 
-    for model in models:
-        for attempt in range(retries + 1):
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.5,
-                    max_tokens=1024,
+    for attempt in range(allowed_retries + 1):
+        try:
+            response = client.chat.completions.create(
+                model=DEFAULT_MODEL,
+                messages=messages,
+                temperature=0.5,
+                max_tokens=1024,
+            )
+
+            content = response.choices[0].message.content
+
+            # JSON safe handling
+            if expect_json:
+                parsed = safe_parse_json(content)
+                if parsed:
+                    return parsed
+
+            return content
+
+        except Exception as e:
+            last_error = str(e)
+            print(
+                f"[ERROR] Model {DEFAULT_MODEL} attempt {attempt+1}: {last_error}"
+            )
+
+            # For rate limit errors, do not keep retrying.
+            if "429" in last_error:
+                return (
+                    {"error": "AI is temporarily busy, please try again."}
+                    if expect_json
+                    else "AI is temporarily busy, please try again."
                 )
 
-                content = response.choices[0].message.content
+            if attempt < allowed_retries:
+                time.sleep(1)
 
-                # JSON safe handling
-                if expect_json:
-                    parsed = safe_parse_json(content)
-                    if parsed:
-                        return parsed
-
-                return content
-
-            except Exception as e:
-                last_error = str(e)
-                print(f"[ERROR] Model {model} attempt {attempt+1}: {last_error}")
-
-                # retries are disabled by default to reduce latency/quota usage
-                if attempt < retries:
-                    time.sleep(1.5)
-                else:
-                    break  # switch to next model
-
-    # All models failed
-    print(f"[FATAL] All models failed: {last_error}")
-
+    print(f"[FATAL] LLM call failed: {last_error}")
     return (
-        {"error": "LLM failed"}
+        {"error": "AI is temporarily busy, please try again."}
         if expect_json
-        else "Sorry, AI is busy. Please try again."
+        else "AI is temporarily busy, please try again."
     )

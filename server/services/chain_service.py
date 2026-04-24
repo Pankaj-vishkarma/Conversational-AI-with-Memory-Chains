@@ -1,10 +1,13 @@
-from services.memory_service import build_buffer_memory, get_summary
+from services.memory_service import (
+    build_buffer_memory,
+    get_summary,
+    get_user_entities_by_conversation,
+)
 from services.entity_service import get_entities
 from services.graph_service import get_graph_context
 from services.llm_service import generate_response
 from services.persona_service import get_persona
 from models.conversation import Conversation
-from models.entity import Entity
 
 SELF_QUERY_MARKERS = [
     "my name",
@@ -96,6 +99,13 @@ def _infer_fact_label_value(name, description):
             return "name", value or raw_name
         return "name", raw_name or raw_desc
 
+    # Handle common entity extractor output like:
+    # {"name": "Pankaj Vishwakarma", "description": "Person"}
+    if raw_name and _contains_any(raw_desc.lower(), ["person", "human", "individual"]):
+        parts = [p for p in raw_name.replace(".", " ").split() if p]
+        if len(parts) >= 2:
+            return "name", raw_name
+
     if _contains_any(combined, ["prefer", "preference", "likes", "favorite"]):
         if raw_name.lower() in ["preference", "preferred language", "preferred stack"]:
             return "preference", raw_desc
@@ -133,32 +143,17 @@ def get_merged_entities(conversation_id):
     merged = {}
 
     try:
-        # Fetch by user scope (cross-chat) using conversation ownership.
+        # Resolve user for this conversation first.
         conversation = Conversation.query.filter_by(id=conversation_id).first()
         if not conversation:
             fallback = get_entities(conversation_id)
             return [], fallback
 
-        user_conversation_ids = [
-            c.id
-            for c in Conversation.query.filter_by(user_id=conversation.user_id).all()
-        ]
-
-        if not user_conversation_ids:
-            all_entities = []
-        else:
-            all_entities = (
-                Entity.query.filter(Entity.conversation_id.in_(user_conversation_ids))
-                .order_by(Entity.created_at.desc())
-                .all()
-            )
+        # Fetch entities by user scope (cross-chat), latest-first.
+        all_entities = get_user_entities_by_conversation(conversation_id)
 
         for entity in all_entities:
             is_current_conversation = entity.conversation_id == conversation_id
-            if not is_current_conversation and not _is_global_entity(
-                entity.name, entity.description
-            ):
-                continue
 
             key = (entity.name or "").strip().lower()
             if not key:

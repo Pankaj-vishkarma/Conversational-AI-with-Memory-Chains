@@ -1,10 +1,12 @@
 from services.message_service import get_conversation_messages
 from services.llm_service import generate_response
 from models.summary import Summary
+from models.entity import Entity
+from models.conversation import Conversation
 from extensions import db
 
 
-SUMMARY_TRIGGER_COUNT = 3  # delay summary for better performance
+SUMMARY_TRIGGER_COUNT = 5  # delay summary for better performance
 
 
 def build_buffer_memory(conversation_id):
@@ -20,6 +22,30 @@ def build_buffer_memory(conversation_id):
 def get_summary(conversation_id):
     summary = Summary.query.filter_by(conversation_id=conversation_id).first()
     return summary.content if summary else None
+
+
+def get_user_entities_by_conversation(conversation_id):
+    """
+    Resolve user by conversation and fetch entities by user scope.
+    Returned latest-first for "latest value wins" merging.
+    """
+    conversation = Conversation.query.filter_by(id=conversation_id).first()
+    if not conversation:
+        return []
+
+    return get_user_entities(conversation.user_id)
+
+
+def get_user_entities(user_id):
+    """
+    Fetch all entities belonging to a user across conversations.
+    """
+    return (
+        Entity.query.join(Conversation, Entity.conversation_id == Conversation.id)
+        .filter(Conversation.user_id == user_id)
+        .order_by(Entity.created_at.desc())
+        .all()
+    )
 
 
 def update_summary(conversation_id):

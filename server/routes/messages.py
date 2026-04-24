@@ -17,6 +17,27 @@ messages_bp = Blueprint("messages", __name__)
 executor = ThreadPoolExecutor(max_workers=1)
 
 
+PERSONAL_INFO_MARKERS = [
+    "my ",
+    "name is",
+    "i am",
+    "i work",
+    "i live",
+    "i prefer",
+    "i like",
+    "i'm",
+]
+
+
+def _has_meaningful_content(text):
+    return len((text or "").strip().split()) > 3
+
+
+def _contains_personal_info(text):
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in PERSONAL_INFO_MARKERS)
+
+
 @messages_bp.route("/", methods=["POST"], strict_slashes=False)
 @jwt_required()
 def send_message():
@@ -60,11 +81,9 @@ def send_message():
             return jsonify({"error": "Failed to save AI response"}), 500
 
         app = current_app._get_current_object()
-        lower_user_message = user_message.lower()
-        should_extract_memory = any(
-            marker in lower_user_message
-            for marker in ["my ", " i ", "name is", "i am", "i work", "i live", "prefer"]
-        )
+        should_extract_memory = _has_meaningful_content(
+            user_message
+        ) or _contains_personal_info(user_message)
         message_count = len(get_conversation_messages(conversation_id))
         should_update_summary = message_count >= 3 and message_count % 4 == 0
 
@@ -74,12 +93,12 @@ def send_message():
                 try:
                     if should_extract_memory:
                         entities = extract_entities_from_text(user_message)
+                        print("Extracted entities:", entities)
                         if entities:
                             save_entities(conversation_id, entities)
-
-                        triples = extract_triples(user_message)
-                        if triples:
-                            save_triples(conversation_id, triples)
+                            triples = extract_triples(user_message)
+                            if triples:
+                                save_triples(conversation_id, triples)
 
                     if should_update_summary:
                         update_summary(conversation_id)
