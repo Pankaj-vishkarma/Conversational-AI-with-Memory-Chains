@@ -54,6 +54,12 @@ export default function Dashboard() {
     loadPersonas();
   }, [loadConversations, loadPersonas]);
 
+  useEffect(() => {
+    if (!activeId && conversations.length > 0) {
+      handleSelect(conversations[0].id);
+    }
+  }, [activeId, conversations]);
+
   async function handleNewChat() {
     try {
       const data = await createConversation({ persona_id: activePersona });
@@ -83,16 +89,34 @@ export default function Dashboard() {
   }
 
   async function handleSend(text) {
-    if (!activeId) return;
+    let conversationId = activeId;
+
+    if (!conversationId) {
+      try {
+        const conversationData = await createConversation({ persona_id: activePersona });
+        const conv = conversationData.conversation || conversationData;
+        conversationId = conv.id;
+
+        setConversations((prev) => {
+          if (prev.some((item) => item.id === conv.id)) return prev;
+          return [conv, ...prev];
+        });
+        setActiveId(conv.id);
+        setMessages((prev) => ({ ...prev, [conv.id]: prev[conv.id] || [] }));
+      } catch {
+        return;
+      }
+    }
+
     const userMsg = { role: 'user', content: text };
     setMessages((prev) => ({
       ...prev,
-      [activeId]: [...(prev[activeId] || []), userMsg],
+      [conversationId]: [...(prev[conversationId] || []), userMsg],
     }));
     setSending(true);
     try {
       const data = await sendMessage({
-        conversation_id: activeId,
+        conversation_id: conversationId,
         message: text,
         persona_id: activePersona,
       });
@@ -103,14 +127,14 @@ export default function Dashboard() {
       };
       setMessages((prev) => ({
         ...prev,
-        [activeId]: [...(prev[activeId] || []), aiMsg],
+        [conversationId]: [...(prev[conversationId] || []), aiMsg],
       }));
       setMemoryVersion((prev) => prev + 1);
     } catch {
       const errMsg = { role: 'assistant', content: 'Failed to get response. Please try again.' };
       setMessages((prev) => ({
         ...prev,
-        [activeId]: [...(prev[activeId] || []), errMsg],
+        [conversationId]: [...(prev[conversationId] || []), errMsg],
       }));
     } finally {
       setSending(false);
