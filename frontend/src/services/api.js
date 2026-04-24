@@ -57,6 +57,10 @@ export function createConversation(data) {
   return request('POST', '/api/conversations/', data || {});
 }
 
+export function deleteConversation(conversationId) {
+  return request('DELETE', `/api/conversations/${conversationId}`);
+}
+
 // Messages
 export function getMessages(conversationId) {
   return request('GET', `/api/messages/${conversationId}`);

@@ -7,6 +7,7 @@ import MemoryTabs from '../components/MemoryTabs';
 import {
   getConversations,
   createConversation,
+  deleteConversation,
   getMessages,
   sendMessage,
   getPersonas,
@@ -161,6 +162,36 @@ export default function Dashboard() {
     }
   }
 
+  async function handleDeleteConversation(conversationId) {
+    const confirmed = window.confirm('Delete this conversation?');
+    if (!confirmed) return;
+
+    try {
+      await deleteConversation(conversationId);
+
+      setConversations((prev) => {
+        const nextList = prev.filter((c) => c.id !== conversationId);
+
+        setMessages((prevMessages) => {
+          const copy = { ...prevMessages };
+          delete copy[conversationId];
+          return copy;
+        });
+
+        if (activeId === conversationId) {
+          const nextActive = nextList[0]?.id || null;
+          setActiveId(nextActive);
+          setShowExport(false);
+          setExportData(null);
+        }
+
+        return nextList;
+      });
+    } catch {
+      // error handled by api layer
+    }
+  }
+
   const activeMessages = activeId ? messages[activeId] || [] : [];
 
   return (
@@ -170,6 +201,7 @@ export default function Dashboard() {
         activeId={activeId}
         onSelect={handleSelect}
         onNew={handleNewChat}
+        onDelete={handleDeleteConversation}
       />
 
       <div className="flex-1 flex flex-col min-w-0">

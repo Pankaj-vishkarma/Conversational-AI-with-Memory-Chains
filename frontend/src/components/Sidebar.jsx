@@ -1,4 +1,4 @@
-export default function Sidebar({ conversations, activeId, onSelect, onNew }) {
+export default function Sidebar({ conversations, activeId, onSelect, onNew, onDelete }) {
   return (
     <aside className="w-72 h-full bg-white/[0.02] border-r border-white/5 flex flex-col">
       <div className="p-4 border-b border-white/5">
@@ -15,17 +15,32 @@ export default function Sidebar({ conversations, activeId, onSelect, onNew }) {
           <p className="text-gray-500 text-sm text-center py-8">No conversations yet</p>
         )}
         {conversations.map((c) => (
-          <button
+          <div
             key={c.id}
-            onClick={() => onSelect(c.id)}
-            className={`w-full text-left px-4 py-3 rounded-xl text-sm transition-all duration-150 ${
+            className={`group w-full flex items-center gap-2 px-2 py-1 rounded-xl text-sm transition-all duration-150 ${
               c.id === activeId
-                ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/30'
-                : 'text-gray-300 hover:bg-white/5 hover:text-white'
+                ? 'bg-emerald-600/20 border border-emerald-500/30'
+                : 'hover:bg-white/5'
             }`}
           >
-            <span className="block truncate">{c.title || `Chat ${c.id?.slice(0, 8)}`}</span>
-          </button>
+            <button
+              onClick={() => onSelect(c.id)}
+              className={`flex-1 min-w-0 text-left px-2 py-2 rounded-lg ${
+                c.id === activeId ? 'text-emerald-300' : 'text-gray-300 group-hover:text-white'
+              }`}
+            >
+              <span className="block truncate">{c.title || `Chat ${c.id?.slice(0, 8)}`}</span>
+            </button>
+
+            <button
+              onClick={() => onDelete?.(c.id)}
+              aria-label="Delete conversation"
+              title="Delete conversation"
+              className="shrink-0 opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-opacity duration-150 p-1"
+            >
+              🗑
+            </button>
+          </div>
         ))}
       </div>
     </aside>
