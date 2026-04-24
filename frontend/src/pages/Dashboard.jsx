@@ -26,6 +26,8 @@ export default function Dashboard() {
   const [exportData, setExportData] = useState(null);
   const [showExport, setShowExport] = useState(false);
   const [memoryVersion, setMemoryVersion] = useState(0);
+  const [showMobileMemory, setShowMobileMemory] = useState(false);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -192,29 +194,42 @@ export default function Dashboard() {
     }
   }
 
+  function handleOpenMemory() {
+    if (window.matchMedia('(max-width: 1023px)').matches) {
+      setShowMobileMemory(true);
+    }
+  }
+
   const activeMessages = activeId ? messages[activeId] || [] : [];
 
   return (
-    <div className="h-screen flex bg-gray-950 text-white overflow-hidden">
+    <div className="h-screen max-w-full overflow-x-hidden flex bg-gray-950 text-white overflow-hidden">
       <Sidebar
         conversations={conversations}
         activeId={activeId}
         onSelect={handleSelect}
         onNew={handleNewChat}
         onDelete={handleDeleteConversation}
+        onOpenMemory={handleOpenMemory}
+        onExport={activeId ? handleExport : undefined}
+        onLogout={handleLogout}
+        mobileOpen={showMobileSidebar}
+        onCloseMobile={() => setShowMobileSidebar(false)}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 max-w-full">
         <Topbar
           personas={personas}
           activePersona={activePersona}
           onPersonaChange={setActivePersona}
-          onLogout={handleLogout}
+          onMenuToggle={() => setShowMobileSidebar(true)}
+          onOpenMemory={handleOpenMemory}
           onExport={activeId ? handleExport : null}
+          onLogout={handleLogout}
         />
 
-        <div className="flex-1 flex min-h-0">
-          <div className="flex-1 min-w-0">
+        <div className="flex-1 flex min-h-0 max-w-full overflow-hidden">
+          <div className="flex-1 min-w-0 max-w-full">
             {showExport && exportData ? (
               <ExportView data={exportData} onClose={() => setShowExport(false)} />
             ) : (
@@ -231,6 +246,30 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {showMobileMemory && (
+        <div className="fixed inset-0 z-50 block lg:hidden">
+          <button
+            aria-label="Close memory panel"
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setShowMobileMemory(false)}
+          />
+          <div className="absolute bottom-0 left-0 right-0 h-[70vh] bg-gray-950 border-t border-white/10 rounded-t-2xl overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-white/5">
+              <h2 className="text-sm font-medium text-gray-200">Memory</h2>
+              <button
+                onClick={() => setShowMobileMemory(false)}
+                className="px-3 py-1.5 text-sm text-gray-300 hover:text-white bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <MemoryTabs conversationId={activeId} refreshKey={memoryVersion} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

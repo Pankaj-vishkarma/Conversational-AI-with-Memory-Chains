@@ -1,6 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
 
-export default function Topbar({ personas, activePersona, onPersonaChange, onLogout, onExport }) {
+export default function Topbar({
+  personas,
+  activePersona,
+  onPersonaChange,
+  onMenuToggle,
+  onExport,
+  onLogout,
+  onOpenMemory,
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -16,7 +24,15 @@ export default function Topbar({ personas, activePersona, onPersonaChange, onLog
 
   return (
     <header className="h-14 bg-white/[0.02] border-b border-white/5 flex items-center justify-between px-5">
-      <div className="relative" ref={ref}>
+      <button
+        onClick={onMenuToggle}
+        className="lg:hidden px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-gray-200 hover:bg-white/10 transition"
+        aria-label="Open sidebar"
+      >
+        ☰
+      </button>
+
+      <div className="relative lg:ml-0 ml-auto" ref={ref}>
         <button
           onClick={() => setOpen(!open)}
           className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-sm text-gray-200 hover:bg-white/10 transition"
@@ -40,9 +56,8 @@ export default function Topbar({ personas, activePersona, onPersonaChange, onLog
                   onPersonaChange(p.id);
                   setOpen(false);
                 }}
-                className={`w-full text-left px-4 py-2.5 text-sm transition hover:bg-white/5 ${
-                  p.id === activePersona ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-300'
-                }`}
+                className={`w-full text-left px-4 py-2.5 text-sm transition hover:bg-white/5 ${p.id === activePersona ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-300'
+                  }`}
               >
                 {p.name}
               </button>
@@ -51,7 +66,13 @@ export default function Topbar({ personas, activePersona, onPersonaChange, onLog
         )}
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="hidden lg:flex items-center gap-3">
+        {/* <button
+          onClick={onOpenMemory}
+          className="px-4 py-2 text-sm text-gray-300 hover:text-white bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 transition"
+        >
+          Memory
+        </button> */}
         {onExport && (
           <button
             onClick={onExport}

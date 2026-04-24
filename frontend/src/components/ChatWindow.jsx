@@ -11,8 +11,8 @@ export default function ChatWindow({ messages, onSend, loading }) {
   }, [messages, loading]);
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto px-6 py-4">
+    <div className="flex flex-col h-full min-h-0 max-w-full overflow-x-hidden">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 sm:px-6 py-4 pb-28 lg:pb-4 max-w-full break-words">
         {messages.length === 0 && !loading && (
           <div className="flex items-center justify-center h-full">
             <p className="text-gray-500 text-sm">Start a conversation</p>
@@ -24,7 +24,9 @@ export default function ChatWindow({ messages, onSend, loading }) {
         {loading && <Loader />}
         <div ref={bottomRef} />
       </div>
-      <InputBox onSend={onSend} disabled={loading} />
+      <div className="sticky bottom-0 max-w-full bg-gray-950">
+        <InputBox onSend={onSend} disabled={loading} />
+      </div>
     </div>
   );
 }
