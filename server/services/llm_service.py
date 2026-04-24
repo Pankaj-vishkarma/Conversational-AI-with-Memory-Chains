@@ -23,7 +23,7 @@ def safe_parse_json(text):
     return None
 
 
-def generate_response(messages, expect_json=False, retries=2):
+def generate_response(messages, expect_json=False, retries=0):
     """
     Groq response with multi-model fallback (FREE tier safe)
     """
@@ -61,7 +61,7 @@ def generate_response(messages, expect_json=False, retries=2):
                 last_error = str(e)
                 print(f"[ERROR] Model {model} attempt {attempt+1}: {last_error}")
 
-                # retry only for same model
+                # retries are disabled by default to reduce latency/quota usage
                 if attempt < retries:
                     time.sleep(1.5)
                 else:

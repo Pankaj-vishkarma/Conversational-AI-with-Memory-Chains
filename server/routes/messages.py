@@ -14,7 +14,7 @@ from models.conversation import Conversation
 messages_bp = Blueprint("messages", __name__)
 
 # Thread pool (global)
-executor = ThreadPoolExecutor(max_workers=3)
+executor = ThreadPoolExecutor(max_workers=1)
 
 
 @messages_bp.route("/", methods=["POST"], strict_slashes=False)
@@ -60,37 +60,33 @@ def send_message():
             return jsonify({"error": "Failed to save AI response"}), 500
 
         app = current_app._get_current_object()
+        lower_user_message = user_message.lower()
+        should_extract_memory = any(
+            marker in lower_user_message
+            for marker in ["my ", " i ", "name is", "i am", "i work", "i live", "prefer"]
+        )
+        message_count = len(get_conversation_messages(conversation_id))
+        should_update_summary = message_count >= 3 and message_count % 4 == 0
 
-        # PARALLEL TASKS
-        def run_entity_task():
+        # Background enrichment (throttled)
+        def run_memory_tasks():
             with app.app_context():
                 try:
-                    entities = extract_entities_from_text(user_message)
-                    if entities:
-                        save_entities(conversation_id, entities)
-                except Exception as e:
-                    print(f"[WARNING] Entity task failed: {str(e)}")
+                    if should_extract_memory:
+                        entities = extract_entities_from_text(user_message)
+                        if entities:
+                            save_entities(conversation_id, entities)
 
-        def run_graph_task():
-            with app.app_context():
-                try:
-                    triples = extract_triples(user_message)
-                    if triples:
-                        save_triples(conversation_id, triples)
-                except Exception as e:
-                    print(f"[WARNING] Graph task failed: {str(e)}")
+                        triples = extract_triples(user_message)
+                        if triples:
+                            save_triples(conversation_id, triples)
 
-        def run_summary_task():
-            with app.app_context():
-                try:
-                    update_summary(conversation_id)
+                    if should_update_summary:
+                        update_summary(conversation_id)
                 except Exception as e:
-                    print(f"[WARNING] Summary task failed: {str(e)}")
+                    print(f"[WARNING] Memory task failed: {str(e)}")
 
-        # Run in parallel
-        executor.submit(run_entity_task)
-        executor.submit(run_graph_task)
-        executor.submit(run_summary_task)
+        executor.submit(run_memory_tasks)
 
         # Return response immediately
         return (

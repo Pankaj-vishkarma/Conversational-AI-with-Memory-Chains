@@ -2,6 +2,23 @@ from services.llm_service import generate_response
 from models.entity import Entity
 from extensions import db
 
+INVALID_VALUES = {
+    "",
+    "user",
+    "your name",
+    "unknown",
+    "i don't know",
+    "i dont know",
+}
+
+
+def _clean(value):
+    return (value or "").strip()
+
+
+def _is_invalid(value):
+    return _clean(value).lower() in INVALID_VALUES
+
 
 def extract_entities_from_text(text):
     """
@@ -26,8 +43,25 @@ def extract_entities_from_text(text):
 
         if not isinstance(data, dict):
             return []
+        raw_entities = data.get("entities", [])
+        if not isinstance(raw_entities, list):
+            return []
 
-        return data.get("entities", [])
+        cleaned = []
+        seen = set()
+        for ent in raw_entities:
+            if not isinstance(ent, dict):
+                continue
+            name = _clean(ent.get("name"))
+            desc = _clean(ent.get("description"))
+            if _is_invalid(name) or _is_invalid(desc):
+                continue
+            key = (name.lower(), desc.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append({"name": name, "description": desc})
+        return cleaned
 
     except Exception as e:
         print(f"[ERROR] extract_entities: {str(e)}")
@@ -41,10 +75,10 @@ def save_entities(conversation_id, entities):
 
     try:
         for ent in entities:
-            name = ent.get("name")
-            desc = ent.get("description")
+            name = _clean(ent.get("name"))
+            desc = _clean(ent.get("description"))
 
-            if not name or not desc:
+            if _is_invalid(name) or _is_invalid(desc):
                 continue
 
             existing = Entity.query.filter_by(

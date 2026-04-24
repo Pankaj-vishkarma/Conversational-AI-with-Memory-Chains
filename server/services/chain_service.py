@@ -6,35 +6,35 @@ from services.persona_service import get_persona
 from models.conversation import Conversation
 from models.entity import Entity
 
+SELF_QUERY_MARKERS = [
+    "my name",
+    "what is my name",
+    "who am i",
+    "where do i work",
+    "i work",
+    "my preference",
+    "what do i like",
+    "my city",
+    "where do i live",
+    "my birthday",
+]
+
 
 def classify_intent(user_message):
     """
-    Detect intent
+    Detect intent without extra LLM call (performance-safe)
     """
+    text = (user_message or "").lower()
+    if any(x in text for x in ["analyze", "analysis", "compare", "why", "explain"]):
+        return "analysis"
+    if any(x in text for x in ["hi", "hello", "hey", "thanks"]):
+        return "smalltalk"
+    return "question"
 
-    prompt = [
-        {
-            "role": "system",
-            "content": (
-                "Classify intent strictly into one word: "
-                "question, analysis, smalltalk"
-            ),
-        },
-        {"role": "user", "content": user_message},
-    ]
 
-    try:
-        result = generate_response(prompt).lower()
-
-        if "analysis" in result:
-            return "analysis"
-        elif "small" in result:
-            return "smalltalk"
-        else:
-            return "question"
-
-    except:
-        return "question"
+def _is_self_memory_query(user_message):
+    text = (user_message or "").strip().lower()
+    return any(marker in text for marker in SELF_QUERY_MARKERS)
 
 
 def _is_global_entity(name, description):
@@ -133,41 +133,31 @@ def get_merged_entities(conversation_id):
     merged = {}
 
     try:
-        # (a) Current conversation entities (existing behavior preserved)
-        current_entities = get_entities(conversation_id)
-        for item in current_entities:
-            name, desc = _parse_entity_line(item)
-            key = name.lower()
-            if key:
-                merged[key] = {
-                    "name": name,
-                    "description": desc,
-                    "updated_at": None,
-                    "is_global": _is_global_entity(name, desc),
-                }
-
-        # (b) Global entities from user's other conversations
+        # Fetch by user scope (cross-chat) using conversation ownership.
         conversation = Conversation.query.filter_by(id=conversation_id).first()
         if not conversation:
-            return [], current_entities
+            fallback = get_entities(conversation_id)
+            return [], fallback
 
         user_conversation_ids = [
             c.id
             for c in Conversation.query.filter_by(user_id=conversation.user_id).all()
-            if c.id != conversation_id
         ]
 
         if not user_conversation_ids:
-            global_entities = []
+            all_entities = []
         else:
-            global_entities = (
+            all_entities = (
                 Entity.query.filter(Entity.conversation_id.in_(user_conversation_ids))
-                .order_by(Entity.updated_at.desc())
+                .order_by(Entity.created_at.desc())
                 .all()
             )
 
-        for entity in global_entities:
-            if not _is_global_entity(entity.name, entity.description):
+        for entity in all_entities:
+            is_current_conversation = entity.conversation_id == conversation_id
+            if not is_current_conversation and not _is_global_entity(
+                entity.name, entity.description
+            ):
                 continue
 
             key = (entity.name or "").strip().lower()
@@ -179,20 +169,20 @@ def get_merged_entities(conversation_id):
                 merged[key] = {
                     "name": entity.name.strip(),
                     "description": (entity.description or "").strip(),
-                    "updated_at": entity.updated_at,
-                    "is_global": True,
+                    "updated_at": entity.created_at,
+                    "is_global": not is_current_conversation,
                 }
                 continue
 
             # Prioritize latest information for duplicate entities.
             existing_ts = existing.get("updated_at")
-            entity_ts = entity.updated_at
+            entity_ts = entity.created_at
             if existing_ts is None or (entity_ts and entity_ts > existing_ts):
                 merged[key] = {
                     "name": entity.name.strip(),
                     "description": (entity.description or "").strip(),
-                    "updated_at": entity.updated_at,
-                    "is_global": True,
+                    "updated_at": entity.created_at,
+                    "is_global": not is_current_conversation,
                 }
 
         labeled_user_facts = {}
@@ -238,7 +228,7 @@ def get_merged_entities(conversation_id):
         return [], fallback
 
 
-def build_context(conversation_id, intent):
+def build_context(conversation_id, intent, user_message):
     """
     Build context dynamically based on intent
     """
@@ -253,8 +243,8 @@ def build_context(conversation_id, intent):
                 {"role": "system", "content": f"Conversation summary:\n{summary}"}
             )
 
-    # 2. ENTITY (for factual questions)
-    if intent == "question":
+    # 2. ENTITY (for user-related questions only)
+    if intent == "question" and _is_self_memory_query(user_message):
         user_facts, conversation_entities = get_merged_entities(conversation_id)
         combined = []
         if user_facts:
@@ -336,25 +326,25 @@ def run_conversation_chain(conversation_id, user_message):
         else:
             system_prompt = "You are a precise assistant. Answer clearly and concisely."
 
-    user_facts, _ = get_merged_entities(conversation_id)
-    entity_context = _format_user_facts_for_prompt(user_facts)
-
-    system_prompt = f"""{system_prompt}
+    if _is_self_memory_query(user_message):
+        user_facts, _ = get_merged_entities(conversation_id)
+        entity_context = _format_user_facts_for_prompt(user_facts)
+        system_prompt = f"""{system_prompt}
 
 User Facts:
 {entity_context}
 
 Instructions:
-* These are facts about the user.
-* If user asks about themselves (name, preferences, etc.), ALWAYS use this information.
-* Do NOT say "I don't know" if the answer exists above.
-* Answer confidently using this data.
+* Use persona style.
+* Use memory only for user-related questions.
+* If user-specific fact is missing, say: "I don't have that information yet".
+* Otherwise answer normally.
 """
 
     messages = [{"role": "system", "content": system_prompt}]
 
     # Step 3: dynamic context
-    context = build_context(conversation_id, intent)
+    context = build_context(conversation_id, intent, user_message)
     messages.extend(context)
 
     # Step 4: user input

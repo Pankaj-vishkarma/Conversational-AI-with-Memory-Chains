@@ -4,7 +4,7 @@ from models.summary import Summary
 from extensions import db
 
 
-SUMMARY_TRIGGER_COUNT = 2  # user + assistant messages are enough to start summary
+SUMMARY_TRIGGER_COUNT = 3  # delay summary for better performance
 
 
 def build_buffer_memory(conversation_id):
