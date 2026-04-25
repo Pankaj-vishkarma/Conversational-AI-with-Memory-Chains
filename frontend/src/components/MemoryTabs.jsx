@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getEntities, getGraph, getSummary, getTokens, getMemoryCompare } from '../services/api';
 import Loader from './Loader';
-import ReactMarkdown from "react-markdown"; // ADD THIS
+import ReactMarkdown from "react-markdown";
 
 const TABS = [
   { key: 'summary', label: 'Summary' },
