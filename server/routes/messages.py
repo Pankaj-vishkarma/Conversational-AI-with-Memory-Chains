@@ -29,6 +29,12 @@ PERSONAL_INFO_MARKERS = [
     "i'm",
 ]
 
+MEMORY_INSTRUCTION_MARKERS = [
+    "remember this",
+    "save this",
+    "note this",
+]
+
 
 def _has_meaningful_content(text):
     return len((text or "").strip().split()) > 3
@@ -37,6 +43,22 @@ def _has_meaningful_content(text):
 def _contains_personal_info(text):
     lowered = (text or "").lower()
     return any(marker in lowered for marker in PERSONAL_INFO_MARKERS)
+
+
+def _contains_memory_instruction(text):
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in MEMORY_INSTRUCTION_MARKERS)
+
+
+def _extract_memory_note(text):
+    original = (text or "").strip()
+    lowered = original.lower()
+    for marker in MEMORY_INSTRUCTION_MARKERS:
+        idx = lowered.find(marker)
+        if idx != -1:
+            note = original[idx + len(marker) :].strip(" :,-.")
+            return note or original
+    return original
 
 
 @messages_bp.route("/", methods=["POST"], strict_slashes=False)
@@ -93,9 +115,10 @@ def send_message():
             return jsonify({"error": "Failed to generate response"}), 500
 
         app = current_app._get_current_object()
+        is_memory_instruction = _contains_memory_instruction(user_message)
         should_extract_memory = _has_meaningful_content(
             user_message
-        ) or _contains_personal_info(user_message)
+        ) or _contains_personal_info(user_message) or is_memory_instruction
         message_count = len(get_conversation_messages(conversation_id))
         should_update_summary = message_count >= 3 and message_count % 4 == 0
 
@@ -105,6 +128,9 @@ def send_message():
                 try:
                     if should_extract_memory:
                         entities = extract_entities_from_text(user_message)
+                        if is_memory_instruction and not entities:
+                            note_text = _extract_memory_note(user_message)
+                            entities = [{"name": "memory_note", "description": note_text}]
                         print("Extracted entities:", entities)
                         if entities:
                             save_entities(conversation_id, entities)

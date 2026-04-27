@@ -70,6 +70,10 @@ def _is_meaningful_entity(name, description):
     if not clean_name or not clean_desc:
         return False
 
+    # Keep explicit memory-instruction fallback notes.
+    if lower_name == "memory_note":
+        return len(clean_desc.split()) >= 2
+
     # Drop obvious generic/noisy entities.
     if lower_name in GENERIC_ENTITY_WORDS or lower_desc in GENERIC_ENTITY_WORDS:
         return False

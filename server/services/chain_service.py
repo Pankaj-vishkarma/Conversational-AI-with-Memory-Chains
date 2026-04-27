@@ -8,6 +8,7 @@ from services.graph_service import get_graph_context
 from services.llm_service import generate_response
 from services.persona_service import get_persona
 from models.conversation import Conversation
+import re
 
 SELF_QUERY_MARKERS = [
     "my name",
@@ -29,6 +30,13 @@ SELF_QUERY_MARKERS = [
     "my city",
     "where do i live",
     "my birthday",
+    "remember my",
+    "what do you know about me",
+    "do you remember",
+    "employee id",
+    "emp-",
+    "project",
+    "what project did i tell you",
 ]
 
 
@@ -99,6 +107,16 @@ def _infer_fact_label_value(name, description):
     def _contains_any(text, words):
         return any(word in text for word in words)
 
+    def _first_non_generic(candidates, blocked):
+        for candidate in candidates:
+            value = (candidate or "").strip()
+            if not value:
+                continue
+            if value.lower() in blocked:
+                continue
+            return value
+        return None
+
     if _contains_any(combined, ["name", "called", "my name"]):
         # Prefer explicit "name" labels.
         if raw_name.lower() in ["name", "user name", "username", "full name"]:
@@ -128,6 +146,27 @@ def _infer_fact_label_value(name, description):
 
     if _contains_any(combined, ["company", "employer", "work at", "works at"]):
         return "company", raw_desc or raw_name
+
+    if _contains_any(
+        combined, ["employee id", "emp-", "employee number", "staff id", "id"]
+    ):
+        # Prefer explicit ID token patterns when present.
+        emp_match = re.search(r"\bemp[-_\s]?[a-z0-9]+\b", combined, flags=re.IGNORECASE)
+        if emp_match:
+            return "employee_id", emp_match.group(0).replace(" ", "-").upper()
+
+        blocked = {"employee id", "emp id", "employee number", "staff id", "id"}
+        value = _first_non_generic([raw_desc, raw_name], blocked)
+        if value:
+            return "employee_id", value
+        return None, None
+
+    if _contains_any(combined, ["project", "current project", "working on"]):
+        blocked = {"project", "current project", "my project"}
+        value = _first_non_generic([raw_desc, raw_name], blocked)
+        if value:
+            return "project", value
+        return None, None
 
     if _contains_any(combined, ["job", "role", "profession", "work as"]):
         return "role", raw_desc or raw_name

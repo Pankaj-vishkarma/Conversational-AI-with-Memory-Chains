@@ -6,7 +6,7 @@ from models.conversation import Conversation
 from extensions import db
 
 
-SUMMARY_TRIGGER_COUNT = 5  # delay summary for better performance
+SUMMARY_TRIGGER_COUNT = 4  # aligned with message route summary trigger cadence
 
 
 def build_buffer_memory(conversation_id):
@@ -71,7 +71,13 @@ def update_summary(conversation_id):
     prompt = [
         {
             "role": "system",
-            "content": "Summarize the conversation with key facts, decisions, and context.",
+            "content": (
+                "Create a factual summary of the conversation. "
+                "Use ONLY information explicitly stated in the chat messages. "
+                "Do NOT infer, assume, speculate, or add external knowledge. "
+                "If a detail is uncertain or not explicitly stated, do not include it. "
+                "Prefer concise bullet points covering confirmed facts and decisions."
+            ),
         },
         {"role": "user", "content": chat_text},
     ]
