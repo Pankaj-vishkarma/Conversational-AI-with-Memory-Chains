@@ -11,6 +11,46 @@ INVALID_VALUES = {
     "i dont know",
 }
 
+GENERIC_ENTITY_WORDS = {
+    "thing",
+    "things",
+    "something",
+    "anything",
+    "everything",
+    "stuff",
+    "work",
+    "job",
+    "task",
+    "tasks",
+    "info",
+    "information",
+    "detail",
+    "details",
+}
+
+MEANINGFUL_ENTITY_HINTS = {
+    "person",
+    "name",
+    "company",
+    "organization",
+    "org",
+    "project",
+    "product",
+    "preference",
+    "likes",
+    "dislikes",
+    "date",
+    "time",
+    "birthday",
+    "location",
+    "city",
+    "country",
+    "language",
+    "role",
+    "employer",
+    "works at",
+}
+
 
 def _clean(value):
     return (value or "").strip()
@@ -18,6 +58,35 @@ def _clean(value):
 
 def _is_invalid(value):
     return _clean(value).lower() in INVALID_VALUES
+
+
+def _is_meaningful_entity(name, description):
+    clean_name = _clean(name)
+    clean_desc = _clean(description)
+    lower_name = clean_name.lower()
+    lower_desc = clean_desc.lower()
+    combined = f"{lower_name} {lower_desc}"
+
+    if not clean_name or not clean_desc:
+        return False
+
+    # Drop obvious generic/noisy entities.
+    if lower_name in GENERIC_ENTITY_WORDS or lower_desc in GENERIC_ENTITY_WORDS:
+        return False
+    if len(clean_name) < 2:
+        return False
+
+    # Keep entities with meaningful semantic hints.
+    if any(hint in combined for hint in MEANINGFUL_ENTITY_HINTS):
+        return True
+
+    # Keep likely proper entities (multi-word names, IDs, titled entities).
+    if len(clean_name.split()) >= 2:
+        return True
+    if any(ch.isdigit() for ch in clean_name):
+        return True
+
+    return False
 
 
 def extract_entities_from_text(text):
@@ -30,6 +99,9 @@ def extract_entities_from_text(text):
             "role": "system",
             "content": (
                 "Extract important entities from the text. "
+                "Only include meaningful entities such as person, company, organization, "
+                "project, preference, date/time, role, or location. "
+                "Do NOT include generic words like thing, something, work, task, or info. "
                 "Return ONLY valid JSON in this format: "
                 '{"entities": [{"name": "...", "description": "..."}]}'
             ),
@@ -56,6 +128,8 @@ def extract_entities_from_text(text):
             desc = _clean(ent.get("description"))
             if _is_invalid(name) or _is_invalid(desc):
                 continue
+            if not _is_meaningful_entity(name, desc):
+                continue
             key = (name.lower(), desc.lower())
             if key in seen:
                 continue
@@ -79,6 +153,8 @@ def save_entities(conversation_id, entities):
             desc = _clean(ent.get("description"))
 
             if _is_invalid(name) or _is_invalid(desc):
+                continue
+            if not _is_meaningful_entity(name, desc):
                 continue
 
             existing = Entity.query.filter_by(

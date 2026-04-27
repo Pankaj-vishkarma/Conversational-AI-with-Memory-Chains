@@ -14,6 +14,15 @@ SELF_QUERY_MARKERS = [
     "what is my name",
     "who am i",
     "where do i work",
+    "which company do i work",
+    "which company do i work?",
+    "what is my company",
+    "what is my current company",
+    "what is my curent company",
+    "current company",
+    "company name",
+    "employer",
+    "work at",
     "i work",
     "my preference",
     "what do i like",
@@ -117,6 +126,9 @@ def _infer_fact_label_value(name, description):
     if _contains_any(combined, ["city", "country", "location", "live in", "from"]):
         return "location", raw_desc or raw_name
 
+    if _contains_any(combined, ["company", "employer", "work at", "works at"]):
+        return "company", raw_desc or raw_name
+
     if _contains_any(combined, ["job", "role", "profession", "work as"]):
         return "role", raw_desc or raw_name
 
@@ -132,7 +144,7 @@ def _format_user_facts_for_prompt(facts):
     """
     if not facts:
         return "None"
-    return "\n".join([f"* {label}: {value}" for label, value in facts])
+    return "\n".join([f"* You told me your {label} is {value}." for label, value in facts])
 
 
 def get_merged_entities(conversation_id):
@@ -246,7 +258,8 @@ def build_context(conversation_id, intent, user_message):
             combined.append("User Facts:\n" + _format_user_facts_for_prompt(user_facts))
         if conversation_entities:
             combined.append(
-                "Conversation Context:\n" + "\n".join(conversation_entities)
+                "Conversation Context:\n"
+                + "\n".join([f"* You told me: {item}" for item in conversation_entities])
             )
 
         if combined:
@@ -321,6 +334,16 @@ def run_conversation_chain(conversation_id, user_message):
         else:
             system_prompt = "You are a precise assistant. Answer clearly and concisely."
 
+    identity_guard = """
+Identity Rules:
+* You are the assistant, not the user.
+* Treat memory and entities as user-provided facts.
+* Refer to those facts naturally as remembered user statements, e.g. "You told me you work at Google."
+* Prefer current-state phrasing when applicable, e.g. "You currently work at Microsoft."
+* Never claim user facts as your own (do not say "I work at Google") unless persona explicitly defines that as assistant identity.
+"""
+    system_prompt = f"{system_prompt}\n\n{identity_guard}"
+
     if _is_self_memory_query(user_message):
         user_facts, _ = get_merged_entities(conversation_id)
         entity_context = _format_user_facts_for_prompt(user_facts)
@@ -333,6 +356,7 @@ Instructions:
 * Use persona style.
 * Use memory only for user-related questions.
 * If user-specific fact is missing, say: "I don't have that information yet".
+* Keep assistant and user identity separate. User facts must be referenced as user facts.
 * Otherwise answer normally.
 """
 
