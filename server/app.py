@@ -3,6 +3,7 @@ from extensions import db, cors
 from config import Config
 import logging
 import sys
+import os
 
 from flask_jwt_extended import JWTManager
 from flask_bcrypt import Bcrypt
@@ -34,31 +35,31 @@ def create_app():
     # ---------------- INIT EXTENSIONS ----------------
     db.init_app(app)
 
-    # FIXED CORS CONFIG (IMPORTANT)
+    # ---------------- CORS CONFIG (FROM .env) ----------------
     cors.init_app(
         app,
-        resources={r"/api/*": {"origins": "http://localhost:5173"}},
+        resources={r"/api/*": {"origins": app.config.get("CORS_ORIGIN")}},
         supports_credentials=True,
     )
 
-    # AUTH EXTENSIONS INIT
+    # ---------------- AUTH EXTENSIONS ----------------
     bcrypt = Bcrypt(app)
     jwt = JWTManager(app)
 
-    # HANDLE PREFLIGHT (OPTIONS) REQUESTS GLOBALLY
+    # ---------------- PREFLIGHT HANDLER ----------------
     @app.before_request
     def handle_preflight():
         if request.method == "OPTIONS":
             return jsonify({"ok": True}), 200
 
-    # JWT BLOCKLIST CHECK (LOGOUT SUPPORT)
+    # ---------------- JWT BLOCKLIST ----------------
     @jwt.token_in_blocklist_loader
     def check_if_token_revoked(jwt_header, jwt_payload):
         jti = jwt_payload["jti"]
         token = TokenBlocklist.query.filter_by(jti=jti).first()
         return token is not None
 
-    # JWT ERROR HANDLERS (NO REDIRECT ISSUE)
+    # ---------------- JWT ERROR HANDLERS ----------------
     @jwt.unauthorized_loader
     def unauthorized_callback(err):
         return jsonify({"error": "Missing or invalid token"}), 401
@@ -71,7 +72,7 @@ def create_app():
     def expired_token_callback(jwt_header, jwt_payload):
         return jsonify({"error": "Token expired"}), 401
 
-    # ---------------- LOGGING SETUP ----------------
+    # ---------------- LOGGING ----------------
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -85,19 +86,23 @@ def create_app():
     app.register_blueprint(memory_bp, url_prefix="/api/memory")
     app.register_blueprint(export_bp, url_prefix="/api/export")
     app.register_blueprint(health_bp, url_prefix="/api/health")
-
-    # Auth Routes
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
 
     # ---------------- GLOBAL ERROR HANDLER ----------------
     @app.errorhandler(Exception)
     def handle_exception(e):
         logging.error(f"[GLOBAL ERROR] {str(e)}")
+
+        # Debug mode me real error dikhao
+        if app.config.get("DEBUG"):
+            return jsonify({"success": False, "error": str(e)}), 500
+
         return jsonify({"success": False, "error": "Internal server error"}), 500
 
-    # ---------------- DATABASE INIT ----------------
+    # ---------------- DATABASE INIT (SAFE) ----------------
     with app.app_context():
-        db.create_all()
+        if app.config.get("DEBUG"):
+            db.create_all()
 
     return app
 
@@ -105,7 +110,9 @@ def create_app():
 if __name__ == "__main__":
     app = create_app()
 
-    # ENV BASED RUN (IMPORTANT)
-    debug_mode = app.config.get("DEBUG", False)
-
-    app.run(host="0.0.0.0", port=20373, debug=debug_mode)
+    # ---------------- RUN CONFIG FROM .env ----------------
+    app.run(
+        host="0.0.0.0",
+        port=app.config.get("PORT"),
+        debug=app.config.get("DEBUG"),
+    )

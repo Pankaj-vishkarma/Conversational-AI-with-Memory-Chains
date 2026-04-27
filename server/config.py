@@ -4,18 +4,26 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _to_bool(value, default=False):
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Config:
     ENV = os.getenv("ENV", "development")
-    DEBUG = ENV == "development"
+    DEBUG = _to_bool(os.getenv("DEBUG"), default=(ENV == "development"))
+    PORT = int(os.getenv("PORT", "5000"))
+    CORS_ORIGIN = os.getenv("CORS_ORIGIN", "http://localhost:5173")
 
-    SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key")
+    SECRET_KEY = os.getenv("SECRET_KEY")
 
     #  JWT CONFIG
-    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "jwt-super-secret-key")
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
     JWT_ACCESS_TOKEN_EXPIRES = int(os.getenv("JWT_EXPIRES", 3600))  # 1 hour
 
     # Database
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL", "sqlite:///database.db")
+    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # LLM
