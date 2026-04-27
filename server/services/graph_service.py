@@ -50,6 +50,39 @@ MEANINGFUL_PREDICATE_HINTS = {
     "called",
 }
 
+ALLOWED_PREDICATES = {
+    "works_at",
+    "employed_by",
+    "likes",
+    "dislikes",
+    "prefers",
+    "lives_in",
+    "located_in",
+    "born_in",
+    "born_on",
+    "studies_at",
+    "uses",
+    "owns",
+    "is_a",
+    "has_role",
+    "has_name",
+}
+
+PREDICATE_ALIASES = {
+    "work_at": "works_at",
+    "worksat": "works_at",
+    "employed": "employed_by",
+    "employer": "employed_by",
+    "live_in": "lives_in",
+    "lives": "lives_in",
+    "located": "located_in",
+    "born": "born_in",
+    "studies": "studies_at",
+    "name": "has_name",
+    "called": "has_name",
+    "role": "has_role",
+}
+
 
 def _clean(value):
     return (value or "").strip()
@@ -64,9 +97,29 @@ def _normalize_entity(value):
     return token
 
 
+def _normalize_predicate(value):
+    predicate = _clean(value).lower().replace("-", "_").replace(" ", "_")
+    return PREDICATE_ALIASES.get(predicate, predicate)
+
+
+def _is_meaningful_graph_entity(value):
+    token = _normalize_entity(value)
+    lower = token.lower()
+
+    if not token:
+        return False
+    if lower in GENERIC_ENTITIES:
+        return False
+    if lower == "user":
+        return True
+    if len(token) < 2:
+        return False
+    return True
+
+
 def _is_meaningful_triple(subject, predicate, obj):
     s = _normalize_entity(subject)
-    p = _clean(predicate)
+    p = _normalize_predicate(predicate)
     o = _normalize_entity(obj)
     ls, lp, lo = s.lower(), p.lower(), o.lower()
 
@@ -74,9 +127,11 @@ def _is_meaningful_triple(subject, predicate, obj):
         return False
 
     # Keep graph edges factual and non-trivial.
-    if ls in GENERIC_ENTITIES or lo in GENERIC_ENTITIES:
+    if not _is_meaningful_graph_entity(s) or not _is_meaningful_graph_entity(o):
         return False
     if lp in VAGUE_PREDICATES:
+        return False
+    if lp not in ALLOWED_PREDICATES:
         return False
     if len(p) < 2:
         return False
@@ -87,15 +142,7 @@ def _is_meaningful_triple(subject, predicate, obj):
     if ls == lo:
         return False
 
-    if any(hint in lp for hint in MEANINGFUL_PREDICATE_HINTS):
-        return True
-
-    # Predicate can still be meaningful even if not in hints, as long as
-    # both ends look like concrete entities and predicate is not vague.
-    if len(s.split()) >= 1 and len(o.split()) >= 1:
-        return True
-
-    return False
+    return True
 
 
 def extract_triples(text):
@@ -142,7 +189,7 @@ def save_triples(conversation_id, triples):
         seen = set()
         for t in triples:
             subject = _normalize_entity(t.get("subject"))
-            predicate = _clean(t.get("predicate"))
+            predicate = _normalize_predicate(t.get("predicate"))
             obj = _normalize_entity(t.get("object"))
 
             if not _is_meaningful_triple(subject, predicate, obj):

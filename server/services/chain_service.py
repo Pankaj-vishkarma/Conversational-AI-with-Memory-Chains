@@ -103,6 +103,21 @@ def _infer_fact_label_value(name, description):
     raw_name = (name or "").strip()
     raw_desc = (description or "").strip()
     combined = f"{raw_name} {raw_desc}".lower()
+    generic_type_values = {
+        "person",
+        "human",
+        "individual",
+        "company",
+        "organization",
+        "org",
+        "location",
+        "city",
+        "country",
+        "project",
+        "role",
+        "job",
+        "name",
+    }
 
     def _contains_any(text, words):
         return any(word in text for word in words)
@@ -116,6 +131,18 @@ def _infer_fact_label_value(name, description):
                 continue
             return value
         return None
+
+    def _best_fact_value(primary, fallback, blocked=None):
+        blocked_values = set(v.lower() for v in (blocked or set()))
+
+        first = (primary or "").strip()
+        second = (fallback or "").strip()
+
+        if first and first.lower() not in blocked_values:
+            return first
+        if second and second.lower() not in blocked_values:
+            return second
+        return ""
 
     if _contains_any(combined, ["name", "called", "my name"]):
         # Prefer explicit "name" labels.
@@ -139,13 +166,18 @@ def _infer_fact_label_value(name, description):
         return "preference", raw_desc or raw_name
 
     if _contains_any(combined, ["language", "python", "javascript", "java", "golang"]):
-        return "preferred_language", raw_desc or raw_name
+        value = _best_fact_value(raw_desc, raw_name, generic_type_values)
+        return ("preferred_language", value) if value else (None, None)
 
     if _contains_any(combined, ["city", "country", "location", "live in", "from"]):
-        return "location", raw_desc or raw_name
+        value = _best_fact_value(raw_desc, raw_name, generic_type_values)
+        return ("location", value) if value else (None, None)
 
-    if _contains_any(combined, ["company", "employer", "work at", "works at"]):
-        return "company", raw_desc or raw_name
+    if _contains_any(
+        combined, ["company", "organization", "org", "employer", "work at", "works at"]
+    ):
+        value = _best_fact_value(raw_desc, raw_name, generic_type_values)
+        return ("company", value) if value else (None, None)
 
     if _contains_any(
         combined, ["employee id", "emp-", "employee number", "staff id", "id"]
@@ -169,10 +201,12 @@ def _infer_fact_label_value(name, description):
         return None, None
 
     if _contains_any(combined, ["job", "role", "profession", "work as"]):
-        return "role", raw_desc or raw_name
+        value = _best_fact_value(raw_desc, raw_name, generic_type_values)
+        return ("role", value) if value else (None, None)
 
     if _contains_any(combined, ["birthday", "dob"]):
-        return "birthday", raw_desc or raw_name
+        value = _best_fact_value(raw_desc, raw_name, generic_type_values)
+        return ("birthday", value) if value else (None, None)
 
     return None, None
 
@@ -184,6 +218,35 @@ def _format_user_facts_for_prompt(facts):
     if not facts:
         return "None"
     return "\n".join([f"* You told me your {label} is {value}." for label, value in facts])
+
+
+def _rewrite_identity_confusions(response_text):
+    """
+    Rewrite accidental first-person user-fact statements into second-person phrasing.
+    Keeps response generation flow unchanged while enforcing identity boundaries.
+    """
+    text = (response_text or "").strip()
+    if not text:
+        return text
+
+    replacement_rules = [
+        (r"\bI currently work at\b", "You currently work at"),
+        (r"\bI work at\b", "You work at"),
+        (r"\bI am employed at\b", "You are employed at"),
+        (r"\bMy company is\b", "Your company is"),
+        (r"\bI live in\b", "You live in"),
+        (r"\bI am from\b", "You are from"),
+        (r"\bMy name is\b", "Your name is"),
+        (r"\bI am ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", r"You are \1"),
+        (r"\bI like\b", "You like"),
+        (r"\bI prefer\b", "You prefer"),
+        (r"\bMy birthday is\b", "Your birthday is"),
+    ]
+
+    rewritten = text
+    for pattern, replacement in replacement_rules:
+        rewritten = re.sub(pattern, replacement, rewritten, flags=re.IGNORECASE)
+    return rewritten
 
 
 def get_merged_entities(conversation_id):
@@ -380,6 +443,8 @@ Identity Rules:
 * Refer to those facts naturally as remembered user statements, e.g. "You told me you work at Google."
 * Prefer current-state phrasing when applicable, e.g. "You currently work at Microsoft."
 * Never claim user facts as your own (do not say "I work at Google") unless persona explicitly defines that as assistant identity.
+* Always refer to the user as "you" when using memory facts.
+* Never use first-person ("I", "my", "me") to describe user facts.
 """
     system_prompt = f"{system_prompt}\n\n{identity_guard}"
 
@@ -396,6 +461,7 @@ Instructions:
 * Use memory only for user-related questions.
 * If user-specific fact is missing, say: "I don't have that information yet".
 * Keep assistant and user identity separate. User facts must be referenced as user facts.
+* When citing remembered facts, use second-person phrasing ("you/your"), never first-person ("I/my").
 * Otherwise answer normally.
 """
 
@@ -410,5 +476,6 @@ Instructions:
 
     # Step 5: generate response
     response = generate_response(messages)
+    response = _rewrite_identity_confusions(response)
 
     return response

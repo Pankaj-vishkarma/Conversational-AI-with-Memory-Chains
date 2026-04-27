@@ -1,6 +1,7 @@
 from services.llm_service import generate_response
 from models.entity import Entity
 from extensions import db
+from sqlalchemy import func
 
 INVALID_VALUES = {
     "",
@@ -93,6 +94,10 @@ def _is_meaningful_entity(name, description):
     return False
 
 
+def _normalize_entity_name(name):
+    return _clean(name).lower()
+
+
 def extract_entities_from_text(text):
     """
     Use LLM to extract entities from user message
@@ -152,6 +157,8 @@ def save_entities(conversation_id, entities):
     """
 
     try:
+        # Normalize incoming updates so latest mention wins per entity name.
+        normalized_updates = {}
         for ent in entities:
             name = _clean(ent.get("name"))
             desc = _clean(ent.get("description"))
@@ -161,15 +168,34 @@ def save_entities(conversation_id, entities):
             if not _is_meaningful_entity(name, desc):
                 continue
 
-            existing = Entity.query.filter_by(
-                conversation_id=conversation_id, name=name
-            ).first()
+            normalized_updates[_normalize_entity_name(name)] = {
+                "name": name,
+                "description": desc,
+            }
 
-            if existing:
-                existing.description = desc
+        for normalized_name, payload in normalized_updates.items():
+            existing_entities = (
+                Entity.query.filter(
+                    Entity.conversation_id == conversation_id,
+                    func.lower(Entity.name) == normalized_name,
+                )
+                .order_by(Entity.updated_at.desc(), Entity.created_at.desc())
+                .all()
+            )
+
+            if existing_entities:
+                canonical = existing_entities[0]
+                canonical.name = payload["name"]
+                canonical.description = payload["description"]
+
+                # Remove stale duplicates for the same logical entity.
+                for duplicate in existing_entities[1:]:
+                    db.session.delete(duplicate)
             else:
                 new_entity = Entity(
-                    name=name, description=desc, conversation_id=conversation_id
+                    name=payload["name"],
+                    description=payload["description"],
+                    conversation_id=conversation_id,
                 )
                 db.session.add(new_entity)
 
