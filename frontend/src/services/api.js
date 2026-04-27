@@ -1,4 +1,7 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_API_URL ||
+  "http://localhost:20373";
 
 function getToken() {
   return localStorage.getItem('token');
@@ -32,7 +35,12 @@ async function request(method, path, body = null) {
     throw new Error(err.message || err.error || 'Request failed');
   }
 
-  return res.json();
+  if (res.status === 204) {
+    return null;
+  }
+
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
 }
 
 // Auth

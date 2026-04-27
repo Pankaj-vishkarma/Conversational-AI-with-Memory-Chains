@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models.conversation import Conversation
+from extensions import db
 
 messages_bp = Blueprint("messages", __name__)
 
@@ -71,14 +72,25 @@ def send_message():
 
         update_default_title_from_message(conversation, user_message)
 
-        # Run AI chain
-        ai_response = run_conversation_chain(conversation_id, user_message)
+        try:
+            # Run AI chain
+            ai_response = run_conversation_chain(conversation_id, user_message)
 
-        # Save AI response
-        ai_msg = save_message(conversation_id, "assistant", ai_response)
+            # Save AI response
+            ai_msg = save_message(conversation_id, "assistant", ai_response)
 
-        if not ai_msg:
-            return jsonify({"error": "Failed to save AI response"}), 500
+            if not ai_msg:
+                raise Exception("Failed to save AI response")
+
+        except Exception as e:
+            try:
+                db.session.delete(user_msg)
+                db.session.commit()
+            except Exception as rollback_error:
+                print(f"[CRITICAL] Rollback failed: {str(rollback_error)}")
+
+            print(f"[ERROR] AI generation failed: {str(e)}")
+            return jsonify({"error": "Failed to generate response"}), 500
 
         app = current_app._get_current_object()
         should_extract_memory = _has_meaningful_content(
@@ -147,9 +159,9 @@ def list_messages(conversation_id):
                 "conversation_id": message.conversation_id,
                 "role": message.role,
                 "content": message.content,
-                "created_at": message.created_at.isoformat()
-                if message.created_at
-                else None,
+                "created_at": (
+                    message.created_at.isoformat() if message.created_at else None
+                ),
             }
             for message in messages
         ]

@@ -14,7 +14,13 @@ export default function Login() {
     setLoading(true);
     try {
       const data = await login(form);
-      localStorage.setItem('token', data.token);
+      const token = data.token || data.data?.token;
+
+      if (!token) {
+        throw new Error('Token not found in response');
+      }
+
+      localStorage.setItem('token', token);
       navigate('/');
     } catch (err) {
       setError(err.message);

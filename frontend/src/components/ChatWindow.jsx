@@ -19,7 +19,7 @@ export default function ChatWindow({ messages, onSend, loading }) {
           </div>
         )}
         {messages.map((m, i) => (
-          <MessageBubble key={i} message={m} />
+          <MessageBubble key={m.id || `${m.role}-${i}`} message={m} />
         ))}
         {loading && <Loader />}
         <div ref={bottomRef} />

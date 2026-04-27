@@ -41,7 +41,9 @@ def get_entities_api(conversation_id):
                     {
                         "name": e.name,
                         "description": e.description,
-                        "updated_at": e.updated_at,
+                        "updated_at": (
+                            e.updated_at.isoformat() if e.updated_at else None
+                        ),
                     }
                     for e in entities
                 ],

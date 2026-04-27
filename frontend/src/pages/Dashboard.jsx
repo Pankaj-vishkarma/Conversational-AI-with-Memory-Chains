@@ -70,8 +70,8 @@ export default function Dashboard() {
       setConversations((prev) => [conv, ...prev]);
       setActiveId(conv.id);
       setMessages((prev) => ({ ...prev, [conv.id]: [] }));
-    } catch {
-      // error handled
+    } catch (err) {
+      alert(err.message || 'Failed to create conversation');
     }
   }
 
@@ -86,7 +86,8 @@ export default function Dashboard() {
         const list = Array.isArray(data) ? data : data.messages || data.data || [];
         setMessages((prev) => ({ ...prev, [id]: list }));
       })
-      .catch(() => {
+      .catch((err) => {
+        alert(err.message || 'Failed to load messages');
         setMessages((prev) => ({ ...prev, [id]: [] }));
       });
   }
@@ -106,7 +107,8 @@ export default function Dashboard() {
         });
         setActiveId(conv.id);
         setMessages((prev) => ({ ...prev, [conv.id]: prev[conv.id] || [] }));
-      } catch {
+      } catch (err) {
+        alert(err.message || 'Failed to create conversation');
         return;
       }
     }
@@ -116,25 +118,41 @@ export default function Dashboard() {
       ...prev,
       [conversationId]: [...(prev[conversationId] || []), userMsg],
     }));
+
     setSending(true);
+
     try {
       const data = await sendMessage({
         conversation_id: conversationId,
         message: text,
         persona_id: activePersona,
       });
+
       const payload = data.data || data;
+
       const aiMsg = {
         role: 'assistant',
-        content: payload.response || payload.message || payload.content || 'No response',
+        content:
+          payload.response ||
+          payload.message ||
+          payload.content ||
+          'No response',
       };
+
       setMessages((prev) => ({
         ...prev,
         [conversationId]: [...(prev[conversationId] || []), aiMsg],
       }));
+
       setMemoryVersion((prev) => prev + 1);
-    } catch {
-      const errMsg = { role: 'assistant', content: 'Failed to get response. Please try again.' };
+    } catch (err) {
+      alert(err.message || 'Failed to get response');
+
+      const errMsg = {
+        role: 'assistant',
+        content: 'Failed to get response. Please try again.',
+      };
+
       setMessages((prev) => ({
         ...prev,
         [conversationId]: [...(prev[conversationId] || []), errMsg],
@@ -159,8 +177,8 @@ export default function Dashboard() {
       const data = await exportConversation(activeId);
       setExportData(data.data || data);
       setShowExport(true);
-    } catch {
-      // error handled
+    } catch (err) {
+      alert(err.message || 'Failed to export conversation');
     }
   }
 
@@ -189,8 +207,8 @@ export default function Dashboard() {
 
         return nextList;
       });
-    } catch {
-      // error handled by api layer
+    } catch (err) {
+      alert(err.message || 'Failed to delete conversation');
     }
   }
 

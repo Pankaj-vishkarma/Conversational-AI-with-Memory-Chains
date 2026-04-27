@@ -20,7 +20,11 @@ export default function Sidebar({
       </button>
       <button
         onClick={onExport}
-        className="w-full px-4 py-2 text-sm text-gray-300 hover:text-white bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 transition text-left"
+        disabled={!onExport}
+        className={`w-full px-4 py-2 text-sm border rounded-xl transition text-left ${onExport
+            ? 'text-gray-300 hover:text-white bg-white/5 border-white/10 hover:bg-white/10'
+            : 'text-gray-500 bg-white/5 border-white/5 cursor-not-allowed'
+          }`}
       >
         Export
       </button>
@@ -41,15 +45,13 @@ export default function Sidebar({
       {conversations.map((c) => (
         <div
           key={c.id}
-          className={`group w-full flex items-center gap-2 px-2 py-1 rounded-xl text-sm transition-all duration-150 ${
-            c.id === activeId ? 'bg-emerald-600/20 border border-emerald-500/30' : 'hover:bg-white/5'
-          }`}
+          className={`group w-full flex items-center gap-2 px-2 py-1 rounded-xl text-sm transition-all duration-150 ${c.id === activeId ? 'bg-emerald-600/20 border border-emerald-500/30' : 'hover:bg-white/5'
+            }`}
         >
           <button
             onClick={() => onSelect(c.id)}
-            className={`flex-1 min-w-0 text-left px-2 py-2 rounded-lg ${
-              c.id === activeId ? 'text-emerald-300' : 'text-gray-300 group-hover:text-white'
-            }`}
+            className={`flex-1 min-w-0 text-left px-2 py-2 rounded-lg ${c.id === activeId ? 'text-emerald-300' : 'text-gray-300 group-hover:text-white'
+              }`}
           >
             <span className="block truncate">{c.title || `Chat ${c.id?.slice(0, 8)}`}</span>
           </button>

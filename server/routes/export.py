@@ -32,7 +32,11 @@ def export_conversation(conversation_id):
         )
 
         messages_data = [
-            {"role": m.role, "content": m.content, "created_at": m.created_at}
+            {
+                "role": m.role,
+                "content": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
             for m in messages
         ]
 

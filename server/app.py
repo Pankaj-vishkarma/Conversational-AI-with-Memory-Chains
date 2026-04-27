@@ -7,6 +7,7 @@ import os
 
 from flask_jwt_extended import JWTManager
 from flask_bcrypt import Bcrypt
+from werkzeug.exceptions import HTTPException
 
 from models.token_blocklist import TokenBlocklist
 
@@ -92,6 +93,10 @@ def create_app():
     @app.errorhandler(Exception)
     def handle_exception(e):
         logging.error(f"[GLOBAL ERROR] {str(e)}")
+
+        # Preserve HTTP exceptions with their original status codes
+        if isinstance(e, HTTPException):
+            return jsonify({"success": False, "error": e.description}), e.code
 
         # Debug mode me real error dikhao
         if app.config.get("DEBUG"):
