@@ -1,7 +1,12 @@
-const API_BASE =
+const configuredApiBase =
   import.meta.env.VITE_API_BASE_URL ||
   import.meta.env.VITE_API_URL ||
-  "http://localhost:20373";
+  "";
+
+// In Vite dev, prefer same-origin `/api` with proxy to avoid browser CORS errors.
+const API_BASE = import.meta.env.DEV
+  ? ""
+  : configuredApiBase.replace(/\/+$/, "");
 
 function getToken() {
   return localStorage.getItem('token');
@@ -43,6 +48,34 @@ async function request(method, path, body = null) {
   return text ? JSON.parse(text) : null;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function requestWithRetry(method, path, body = null, options = {}) {
+  const { retries = 2, minDelayMs = 300, maxDelayMs = 700 } = options;
+  let lastError;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await request(method, path, body);
+    } catch (err) {
+      lastError = err;
+      const canRetry = !/unauthorized/i.test(err?.message || '');
+      const isLastAttempt = attempt === retries;
+
+      if (!canRetry || isLastAttempt) {
+        throw err;
+      }
+
+      const delay = Math.floor(Math.random() * (maxDelayMs - minDelayMs + 1)) + minDelayMs;
+      await sleep(delay);
+    }
+  }
+
+  throw lastError;
+}
+
 // Auth
 export function register(data) {
   return request('POST', '/api/auth/register', data);
@@ -80,23 +113,23 @@ export function sendMessage(data) {
 
 // Memory
 export function getEntities(conversationId) {
-  return request('GET', `/api/memory/${conversationId}/entities`);
+  return requestWithRetry('GET', `/api/memory/${conversationId}/entities`);
 }
 
 export function getGraph(conversationId) {
-  return request('GET', `/api/memory/${conversationId}/graph`);
+  return requestWithRetry('GET', `/api/memory/${conversationId}/graph`);
 }
 
 export function getSummary(conversationId) {
-  return request('GET', `/api/memory/${conversationId}/summary`);
+  return requestWithRetry('GET', `/api/memory/${conversationId}/summary`);
 }
 
 export function getTokens(conversationId) {
-  return request('GET', `/api/memory/${conversationId}/tokens`);
+  return requestWithRetry('GET', `/api/memory/${conversationId}/tokens`);
 }
 
 export function getMemoryCompare(conversationId) {
-  return request('GET', `/api/memory/compare/${conversationId}`);
+  return requestWithRetry('GET', `/api/memory/compare/${conversationId}`);
 }
 
 // Export

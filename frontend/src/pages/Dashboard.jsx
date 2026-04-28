@@ -70,6 +70,7 @@ export default function Dashboard() {
       setConversations((prev) => [conv, ...prev]);
       setActiveId(conv.id);
       setMessages((prev) => ({ ...prev, [conv.id]: [] }));
+      setMemoryVersion((prev) => prev + 1);
     } catch (err) {
       alert(err.message || 'Failed to create conversation');
     }
@@ -107,6 +108,7 @@ export default function Dashboard() {
         });
         setActiveId(conv.id);
         setMessages((prev) => ({ ...prev, [conv.id]: prev[conv.id] || [] }));
+        setMemoryVersion((prev) => prev + 1);
       } catch (err) {
         alert(err.message || 'Failed to create conversation');
         return;
@@ -145,6 +147,9 @@ export default function Dashboard() {
       }));
 
       setMemoryVersion((prev) => prev + 1);
+      loadConversations().catch(() => {
+        // Keep chat UX uninterrupted if list refresh fails.
+      });
     } catch (err) {
       alert(err.message || 'Failed to get response');
 
