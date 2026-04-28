@@ -21,7 +21,7 @@ export default function Login() {
       }
 
       localStorage.setItem('token', token);
-      navigate('/');
+      navigate('/', { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {

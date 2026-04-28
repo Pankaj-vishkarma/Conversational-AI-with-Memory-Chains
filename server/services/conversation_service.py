@@ -1,4 +1,5 @@
 from models.conversation import Conversation
+from models.message import Message
 from extensions import db
 from sqlalchemy.exc import SQLAlchemyError
 import re
@@ -76,15 +77,57 @@ def create_conversation(data):
     return convo
 
 
-def get_all_conversations(user_id):
+def get_all_conversations(user_id, search=None, pinned=None, archived=None):
     if not user_id:
         raise ValueError("user_id is required")
 
-    return (
-        Conversation.query.filter_by(user_id=user_id)
-        .order_by(Conversation.updated_at.desc(), Conversation.created_at.desc())
-        .all()
-    )
+    query = Conversation.query.filter_by(user_id=user_id)
+
+    if search:
+        like = f"%{search.strip()}%"
+        query = query.outerjoin(
+            Message, Message.conversation_id == Conversation.id
+        ).filter(
+            (Conversation.title.ilike(like)) | (Message.content.ilike(like))
+        )
+
+    if pinned is not None:
+        query = query.filter_by(is_pinned=bool(pinned))
+
+    if archived is not None:
+        query = query.filter_by(is_archived=bool(archived))
+
+    return query.distinct().order_by(
+        Conversation.is_pinned.desc(),
+        Conversation.updated_at.desc(),
+        Conversation.created_at.desc(),
+    ).all()
+
+
+def update_conversation(conversation, data):
+    if not conversation:
+        raise ValueError("conversation is required")
+
+    allowed_fields = {
+        "title",
+        "persona_id",
+        "memory_type",
+        "is_pinned",
+        "is_archived",
+    }
+
+    for key, value in (data or {}).items():
+        if key not in allowed_fields:
+            continue
+        setattr(conversation, key, value)
+
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        raise
+
+    return conversation
 
 
 def serialize_conversation(conversation):

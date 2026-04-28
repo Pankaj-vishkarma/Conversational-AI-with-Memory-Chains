@@ -3,6 +3,7 @@ from services.conversation_service import (
     create_conversation,
     get_all_conversations,
     serialize_conversation,
+    update_conversation,
 )
 from extensions import db
 from models.conversation import Conversation
@@ -45,8 +46,22 @@ def create():
 def list_conversations():
     try:
         user_id = get_jwt_identity()
+        search = (request.args.get("q") or "").strip() or None
 
-        convos = get_all_conversations(user_id)
+        pinned = request.args.get("pinned")
+        if pinned is not None:
+            pinned = pinned.strip().lower() in {"1", "true", "yes", "on"}
+
+        archived = request.args.get("archived")
+        if archived is not None:
+            archived = archived.strip().lower() in {"1", "true", "yes", "on"}
+
+        convos = get_all_conversations(
+            user_id,
+            search=search,
+            pinned=pinned,
+            archived=archived,
+        )
         serialized = [serialize_conversation(c) for c in convos]
 
         return jsonify(
@@ -63,6 +78,28 @@ def list_conversations():
     except Exception:
         current_app.logger.exception("Failed to fetch conversations")
         return jsonify({"success": False, "error": "Failed to fetch conversations"}), 500
+
+
+@conversations_bp.route("/<conversation_id>", methods=["PATCH"])
+@jwt_required()
+def patch_conversation(conversation_id):
+    try:
+        user_id = get_jwt_identity()
+        convo = Conversation.query.filter_by(id=conversation_id, user_id=user_id).first()
+
+        if not convo:
+            return jsonify({"success": False, "error": "Conversation not found"}), 404
+
+        data = request.get_json(silent=True) or {}
+        updated = update_conversation(convo, data)
+        return jsonify({"success": True, "conversation": serialize_conversation(updated)})
+
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+    except Exception:
+        current_app.logger.exception("Failed to update conversation")
+        return jsonify({"success": False, "error": "Failed to update conversation"}), 500
 
 
 @conversations_bp.route("/<conversation_id>", methods=["DELETE"])

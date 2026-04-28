@@ -2,13 +2,40 @@ from services.memory_service import (
     build_buffer_memory,
     get_summary,
     get_user_entities_by_conversation,
+    get_user_summaries_by_conversation,
+    BUFFER_MESSAGE_LIMIT,
 )
 from services.entity_service import get_entities
-from services.graph_service import get_graph_context
-from services.llm_service import generate_response
+from services.graph_service import get_user_graph_context_by_conversation
+from services.llm_service import get_chat_model, generate_response
 from services.persona_service import get_persona
 from models.conversation import Conversation
 import re
+import tiktoken
+
+try:
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+    from langchain_core.runnables import (
+        RunnableBranch,
+        RunnableLambda,
+        RunnableParallel,
+        RunnableSequence,
+    )
+
+    LCEL_AVAILABLE = True
+except Exception as exc:  # pragma: no cover - import guard
+    AIMessage = HumanMessage = SystemMessage = None  # type: ignore
+    StrOutputParser = ChatPromptTemplate = MessagesPlaceholder = None  # type: ignore
+    RunnableBranch = RunnableLambda = RunnableParallel = RunnableSequence = None  # type: ignore
+    LCEL_AVAILABLE = False
+
+_TOKEN_ENCODER = None
+RECENT_MESSAGE_LIMIT = 5
+AUTO_SWITCH_THRESHOLD = 15
+MAX_CONTEXT_TOKENS = 1800
+
 
 SELF_QUERY_MARKERS = [
     "my name",
@@ -57,49 +84,7 @@ def _is_self_memory_query(user_message):
     return any(marker in text for marker in SELF_QUERY_MARKERS)
 
 
-def _is_global_entity(name, description):
-    """
-    Decide if an entity is an important cross-session user fact.
-    """
-    text = f"{name or ''} {description or ''}".lower()
-    global_markers = [
-        "name",
-        "preference",
-        "prefer",
-        "likes",
-        "dislikes",
-        "bio",
-        "personal",
-        "about me",
-        "myself",
-        "location",
-        "city",
-        "country",
-        "timezone",
-        "language",
-        "role",
-        "job",
-        "birthday",
-        "dob",
-    ]
-    return any(marker in text for marker in global_markers)
-
-
-def _parse_entity_line(entity_line):
-    """
-    Parse 'name: description' lines used by entity_service.get_entities.
-    """
-    if ":" not in entity_line:
-        return entity_line.strip(), ""
-    name, desc = entity_line.split(":", 1)
-    return name.strip(), desc.strip()
-
-
 def _infer_fact_label_value(name, description):
-    """
-    Normalize entity data into structured user-fact fields.
-    Returns (label, value) or (None, None) if not a user fact.
-    """
     raw_name = (name or "").strip()
     raw_desc = (description or "").strip()
     combined = f"{raw_name} {raw_desc}".lower()
@@ -145,7 +130,6 @@ def _infer_fact_label_value(name, description):
         return ""
 
     if _contains_any(combined, ["name", "called", "my name"]):
-        # Prefer explicit "name" labels.
         if raw_name.lower() in ["name", "user name", "username", "full name"]:
             return "name", raw_desc
         if ":" in raw_desc and "name" in raw_desc.lower():
@@ -153,8 +137,6 @@ def _infer_fact_label_value(name, description):
             return "name", value or raw_name
         return "name", raw_name or raw_desc
 
-    # Handle common entity extractor output like:
-    # {"name": "Pankaj Vishwakarma", "description": "Person"}
     if raw_name and _contains_any(raw_desc.lower(), ["person", "human", "individual"]):
         parts = [p for p in raw_name.replace(".", " ").split() if p]
         if len(parts) >= 2:
@@ -182,7 +164,6 @@ def _infer_fact_label_value(name, description):
     if _contains_any(
         combined, ["employee id", "emp-", "employee number", "staff id", "id"]
     ):
-        # Prefer explicit ID token patterns when present.
         emp_match = re.search(r"\bemp[-_\s]?[a-z0-9]+\b", combined, flags=re.IGNORECASE)
         if emp_match:
             return "employee_id", emp_match.group(0).replace(" ", "-").upper()
@@ -249,6 +230,41 @@ def _rewrite_identity_confusions(response_text):
     return rewritten
 
 
+def _get_encoder():
+    global _TOKEN_ENCODER
+    if _TOKEN_ENCODER is None:
+        try:
+            _TOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            _TOKEN_ENCODER = False
+    return _TOKEN_ENCODER
+
+
+def _count_tokens(text):
+    if not text:
+        return 0
+    encoder = _get_encoder()
+    if not encoder:
+        return max(1, len(text) // 4)
+    try:
+        return len(encoder.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
+
+
+def _fit_recent_messages(history, max_tokens=MAX_CONTEXT_TOKENS, max_messages=RECENT_MESSAGE_LIMIT):
+    selected = []
+    used = 0
+    for msg in reversed(history or []):
+        content = msg.get("content") or ""
+        cost = _count_tokens(content)
+        if selected and (used + cost > max_tokens or len(selected) >= max_messages):
+            break
+        selected.append(msg)
+        used += cost
+    return list(reversed(selected))
+
+
 def get_merged_entities(conversation_id):
     """
     Fetch conversation entities + cross-session global entities for the same user.
@@ -257,13 +273,11 @@ def get_merged_entities(conversation_id):
     merged = {}
 
     try:
-        # Resolve user for this conversation first.
         conversation = Conversation.query.filter_by(id=conversation_id).first()
         if not conversation:
             fallback = get_entities(conversation_id)
             return [], fallback
 
-        # Fetch entities by user scope (cross-chat), latest-first.
         all_entities = get_user_entities_by_conversation(conversation_id)
 
         for entity in all_entities:
@@ -283,7 +297,6 @@ def get_merged_entities(conversation_id):
                 }
                 continue
 
-            # Prioritize latest information for duplicate entities.
             existing_ts = existing.get("updated_at")
             entity_ts = entity.created_at
             if existing_ts is None or (entity_ts and entity_ts > existing_ts):
@@ -304,7 +317,6 @@ def get_merged_entities(conversation_id):
             label, value = _infer_fact_label_value(raw_name, raw_desc)
             if item["is_global"] and label and value:
                 existing = labeled_user_facts.get(label)
-                # Latest value wins for each labeled field.
                 if (
                     not existing
                     or existing["updated_at"] is None
@@ -321,7 +333,6 @@ def get_merged_entities(conversation_id):
 
             conversation_context.append(line)
 
-        # Keep deterministic output.
         user_facts = [
             (label, payload["value"])
             for label, payload in sorted(
@@ -332,28 +343,41 @@ def get_merged_entities(conversation_id):
         return user_facts, conversation_context
 
     except Exception:
-        # Safe fallback to previous behavior
         fallback = get_entities(conversation_id)
         return [], fallback
 
 
+def _get_cross_session_summary(conversation_id, limit=3):
+    summaries = get_user_summaries_by_conversation(conversation_id)
+    if not summaries:
+        return ""
+
+    blocks = []
+    for item in summaries[:limit]:
+        if item.content:
+            blocks.append(item.content.strip())
+    return "\n\n".join(blocks)
+
+
 def build_context(conversation_id, intent, user_message):
     """
-    Build context dynamically based on intent
+    Build context dynamically based on intent.
+    Kept for compatibility and fallback use.
     """
-
     context = []
 
-    # 1. SUMMARY (for analysis-heavy queries)
-    if intent == "analysis":
-        summary = get_summary(conversation_id)
+    effective_memory = _resolve_memory_strategy(conversation_id, intent, user_message)
+
+    if intent == "analysis" or effective_memory in {"summary", "hybrid"}:
+        summary = get_summary(conversation_id) or _get_cross_session_summary(conversation_id)
         if summary:
             context.append(
                 {"role": "system", "content": f"Conversation summary:\n{summary}"}
             )
 
-    # 2. ENTITY (for user-related questions only)
-    if intent == "question" and _is_self_memory_query(user_message):
+    if effective_memory in {"entity", "hybrid"} or (
+        intent == "question" and _is_self_memory_query(user_message)
+    ):
         user_facts, conversation_entities = get_merged_entities(conversation_id)
         combined = []
         if user_facts:
@@ -367,43 +391,68 @@ def build_context(conversation_id, intent, user_message):
         if combined:
             context.append({"role": "system", "content": "\n\n".join(combined)})
 
-    # 3. GRAPH (optional for deeper reasoning)
-    if intent in ["analysis", "question"]:
-        graph = get_graph_context(conversation_id)
+    if effective_memory in {"kg", "hybrid"} or intent in ["analysis", "question"]:
+        graph = get_user_graph_context_by_conversation(conversation_id)
         if graph:
             context.append(
                 {"role": "system", "content": "Relationships:\n" + "\n".join(graph)}
             )
 
-    # 4. SMALLTALK → minimal context
-
-    # 5. Recent messages always add
-    history = build_buffer_memory(conversation_id)[-5:]
+    history = _fit_recent_messages(
+        build_buffer_memory(conversation_id, max_messages=BUFFER_MESSAGE_LIMIT)
+    )
     context.extend(history)
-
     return context
 
 
-def run_conversation_chain(conversation_id, user_message):
-    """
-    Branching chain:
-    classify → route → build context → generate
-    """
-
-    # Step 0: Load conversation + persona
+def _resolve_memory_strategy(conversation_id, intent, user_message):
     conversation = Conversation.query.filter_by(id=conversation_id).first()
+    configured = ((conversation.memory_type if conversation else "buffer") or "buffer").lower()
+    history = build_buffer_memory(conversation_id, max_messages=0)
 
+    if configured == "hybrid":
+        return "hybrid"
+    if configured == "buffer" and len(history) >= AUTO_SWITCH_THRESHOLD:
+        return "hybrid"
+    if configured == "buffer" and intent == "analysis":
+        return "summary"
+    if configured == "buffer" and _is_self_memory_query(user_message):
+        return "entity"
+    return configured
+
+
+def _memory_flags(conversation, intent, user_message):
+    conversation_id = conversation.id if conversation else None
+    memory_type = _resolve_memory_strategy(conversation_id, intent, user_message) if conversation_id else "buffer"
+
+    flags = {
+        "use_summary": memory_type in {"summary", "hybrid"},
+        "use_entities": memory_type in {"entity", "hybrid"},
+        "use_graph": memory_type in {"kg", "hybrid"},
+    }
+
+    if intent == "analysis":
+        flags["use_summary"] = True
+
+    if intent in {"analysis", "question"} and memory_type in {"buffer", "kg", "hybrid"}:
+        flags["use_graph"] = True
+
+    if _is_self_memory_query(user_message):
+        flags["use_entities"] = True
+
+    return flags
+
+
+def _resolve_persona_prompt(conversation, intent):
     persona_name = None
 
     if conversation and conversation.persona_id:
         persona = get_persona(conversation.persona_id)
         if persona:
             persona_name = persona.name
+            if persona.system_prompt:
+                return persona.system_prompt
 
-    # Step 1: classify intent
-    intent = classify_intent(user_message)
-
-    # Step 2: system prompt (persona override)
     persona_prompts = {
         "assistant": (
             "You are a helpful assistant. Respond directly, clearly, and practically. "
@@ -421,21 +470,19 @@ def run_conversation_chain(conversation_id, user_message):
         ),
     }
 
-    system_prompt = None
-
     if persona_name:
-        system_prompt = persona_prompts.get(persona_name.lower())
+        prompt = persona_prompts.get(persona_name.lower())
+        if prompt:
+            return prompt
 
-    if not persona_name or not system_prompt:
-        if intent == "analysis":
-            system_prompt = (
-                "You are an expert analyst. Give deep, structured explanations."
-            )
-        elif intent == "smalltalk":
-            system_prompt = "You are a friendly casual assistant."
-        else:
-            system_prompt = "You are a precise assistant. Answer clearly and concisely."
+    if intent == "analysis":
+        return "You are an expert analyst. Give deep, structured explanations."
+    if intent == "smalltalk":
+        return "You are a friendly casual assistant."
+    return "You are a precise assistant. Answer clearly and concisely."
 
+
+def _build_system_prompt(payload):
     identity_guard = """
 Identity Rules:
 * You are the assistant, not the user.
@@ -446,15 +493,13 @@ Identity Rules:
 * Always refer to the user as "you" when using memory facts.
 * Never use first-person ("I", "my", "me") to describe user facts.
 """
-    system_prompt = f"{system_prompt}\n\n{identity_guard}"
+    base_prompt = f"{payload['persona_prompt']}\n\n{identity_guard}"
 
-    if _is_self_memory_query(user_message):
-        user_facts, _ = get_merged_entities(conversation_id)
-        entity_context = _format_user_facts_for_prompt(user_facts)
-        system_prompt = f"""{system_prompt}
+    if payload.get("self_facts"):
+        return f"""{base_prompt}
 
 User Facts:
-{entity_context}
+{payload["self_facts"]}
 
 Instructions:
 * Use persona style.
@@ -465,17 +510,180 @@ Instructions:
 * Otherwise answer normally.
 """
 
-    messages = [{"role": "system", "content": system_prompt}]
+    return base_prompt
 
-    # Step 3: dynamic context
-    context = build_context(conversation_id, intent, user_message)
-    messages.extend(context)
 
-    # Step 4: user input
-    messages.append({"role": "user", "content": user_message})
+def _build_prompt_values(payload):
+    return {
+        "system_prompt": _build_system_prompt(payload),
+        "summary": payload.get("summary") or "None",
+        "entities": payload.get("entities") or "None",
+        "graph_context": payload.get("graph_context") or "None",
+        "recent_messages": payload.get("recent_messages") or [],
+        "user_input": payload["user_message"],
+    }
 
-    # Step 5: generate response
-    response = generate_response(messages)
-    response = _rewrite_identity_confusions(response)
 
-    return response
+def _to_prompt_messages(messages):
+    if not LCEL_AVAILABLE:
+        return messages
+
+    converted = []
+    for msg in messages or []:
+        role = (msg.get("role") or "user").lower()
+        content = msg.get("content") or ""
+        if role == "system":
+            converted.append(SystemMessage(content=content))
+        elif role == "assistant":
+            converted.append(AIMessage(content=content))
+        else:
+            converted.append(HumanMessage(content=content))
+    return converted
+
+
+def run_conversation_chain(conversation_id, user_message):
+    """
+    LCEL conversation chain:
+    classify -> branch -> parallel memory load -> prompt -> model -> normalize
+    """
+    conversation = Conversation.query.filter_by(id=conversation_id).first()
+    chat_model = get_chat_model()
+
+    if LCEL_AVAILABLE:
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "{system_prompt}\n\n"
+                    "Conversation Summary:\n{summary}\n\n"
+                    "Entities:\n{entities}\n\n"
+                    "Knowledge Graph Context:\n{graph_context}",
+                ),
+                MessagesPlaceholder("recent_messages"),
+                ("human", "{user_input}"),
+            ]
+        )
+    else:
+        prompt = None
+
+    if chat_model is not None and LCEL_AVAILABLE:
+        def _seed_payload(_):
+            return {
+                "conversation_id": conversation_id,
+                "conversation": conversation,
+                "user_message": user_message,
+            }
+
+        def _classify(payload):
+            payload["intent"] = classify_intent(payload["user_message"])
+            payload["memory_flags"] = _memory_flags(
+                payload["conversation"], payload["intent"], payload["user_message"]
+            )
+            return payload
+
+        def _prepare_branch(payload, branch_name):
+            payload["branch"] = branch_name
+            return payload
+
+        branch = RunnableBranch(
+            (
+                lambda payload: payload["intent"] == "analysis",
+                RunnableLambda(lambda payload: _prepare_branch(payload, "analysis")),
+            ),
+            (
+                lambda payload: payload["intent"] == "smalltalk",
+                RunnableLambda(lambda payload: _prepare_branch(payload, "smalltalk")),
+            ),
+            RunnableLambda(lambda payload: _prepare_branch(payload, "question")),
+        )
+
+        parallel_context = RunnableParallel(
+            conversation_id=RunnableLambda(lambda payload: payload["conversation_id"]),
+            conversation=RunnableLambda(lambda payload: payload["conversation"]),
+            user_message=RunnableLambda(lambda payload: payload["user_message"]),
+            intent=RunnableLambda(lambda payload: payload["intent"]),
+            branch=RunnableLambda(lambda payload: payload["branch"]),
+            persona_prompt=RunnableLambda(
+                lambda payload: _resolve_persona_prompt(
+                    payload["conversation"], payload["intent"]
+                )
+            ),
+            summary=RunnableLambda(
+                lambda payload: (
+                    get_summary(payload["conversation_id"])
+                    or _get_cross_session_summary(payload["conversation_id"])
+                    if payload["memory_flags"]["use_summary"]
+                    else ""
+                )
+            ),
+            entities=RunnableLambda(
+                lambda payload: (
+                    "\n".join(get_entities(payload["conversation_id"]))
+                    if payload["memory_flags"]["use_entities"]
+                    else ""
+                )
+            ),
+            graph_context=RunnableLambda(
+                lambda payload: (
+                    "\n".join(get_user_graph_context_by_conversation(payload["conversation_id"]))
+                    if payload["memory_flags"]["use_graph"]
+                    else ""
+                )
+            ),
+            recent_messages=RunnableLambda(
+                lambda payload: _to_prompt_messages(
+                    _fit_recent_messages(
+                        build_buffer_memory(
+                            payload["conversation_id"],
+                            max_messages=BUFFER_MESSAGE_LIMIT,
+                        )
+                    )
+                )
+            ),
+            self_facts=RunnableLambda(
+                lambda payload: (
+                    _format_user_facts_for_prompt(
+                        get_merged_entities(payload["conversation_id"])[0]
+                    )
+                    if _is_self_memory_query(payload["user_message"])
+                    else ""
+                )
+            ),
+        )
+
+        chain = RunnableSequence(
+            first=RunnableLambda(_seed_payload),
+            middle=[
+                RunnableLambda(_classify),
+                branch,
+                parallel_context,
+                RunnableLambda(_build_prompt_values),
+                prompt,
+                chat_model,
+                StrOutputParser(),
+            ],
+            last=RunnableLambda(_rewrite_identity_confusions),
+        )
+        return chain.invoke(None)
+
+    intent = classify_intent(user_message)
+    fallback_messages = [
+        {
+            "role": "system",
+            "content": _build_system_prompt(
+                {
+                    "persona_prompt": _resolve_persona_prompt(conversation, intent),
+                    "self_facts": _format_user_facts_for_prompt(
+                        get_merged_entities(conversation_id)[0]
+                    )
+                    if _is_self_memory_query(user_message)
+                    else "",
+                }
+            ),
+        }
+    ]
+    fallback_messages.extend(build_context(conversation_id, intent, user_message))
+    fallback_messages.append({"role": "user", "content": user_message})
+
+    response = generate_response(fallback_messages)
+    return _rewrite_identity_confusions(response)

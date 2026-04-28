@@ -1,6 +1,16 @@
 from services.llm_service import generate_response
 from models.kg_triple import KGTriple
+from models.conversation import Conversation
 from extensions import db
+from pydantic import BaseModel, Field
+
+try:
+    from langchain_core.prompts import ChatPromptTemplate
+
+    LANGCHAIN_GRAPH_AVAILABLE = True
+except Exception as exc:  # pragma: no cover - import guard
+    ChatPromptTemplate = None  # type: ignore
+    LANGCHAIN_GRAPH_AVAILABLE = False
 
 GENERIC_ENTITIES = {
     "assistant",
@@ -145,39 +155,111 @@ def _is_meaningful_triple(subject, predicate, obj):
     return True
 
 
+class ExtractedTriple(BaseModel):
+    subject: str = Field(..., description="Subject entity of the fact")
+    predicate: str = Field(
+        ..., description="Normalized relationship label such as works_at or likes"
+    )
+    object: str = Field(..., description="Object entity or value of the fact")
+
+
+class TripleExtractionResult(BaseModel):
+    triples: list[ExtractedTriple] = Field(default_factory=list)
+
+
 def extract_triples(text):
     """
-    Extract subject-predicate-object triples using LLM
+    Extract subject-predicate-object triples using LangChain structured output.
     """
+    if not LANGCHAIN_GRAPH_AVAILABLE:
+        raise_runtime = RuntimeError("LangChain graph extraction unavailable")
+        print(f"[WARNING] structured triple extraction failed: {raise_runtime}")
+        try:
+            fallback_prompt = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract relationships as triples. "
+                        "Only include factual, meaningful relationships "
+                        "(e.g. works_at, likes, lives_in, prefers, owns). "
+                        "Do NOT include vague conversational triples like "
+                        "(user, said, hello). "
+                        'Return ONLY valid JSON in this format: {"triples":[{"subject":"","predicate":"","object":""}]}'
+                    ),
+                },
+                {"role": "user", "content": text},
+            ]
 
-    prompt = [
-        {
-            "role": "system",
-            "content": (
-                "Extract relationships as triples. "
-                "Only include factual, meaningful relationships "
-                "(e.g. works_at, likes, lives_in, prefers, owns). "
-                "Do NOT include vague conversational triples like "
-                "(user, said, hello). "
-                "Return ONLY valid JSON in this format: "
-                '{"triples":[{"subject":"","predicate":"","object":""}]}'
-            ),
-        },
-        {"role": "user", "content": text},
-    ]
+            data = generate_response(fallback_prompt, expect_json=True)
+            if not isinstance(data, dict):
+                return []
 
-    try:
-        # CHANGE: expect_json=True
-        data = generate_response(prompt, expect_json=True)
-
-        if not isinstance(data, dict):
+            triples = data.get("triples", [])
+            return triples if isinstance(triples, list) else []
+        except Exception as e:
+            print(f"[ERROR] extract_triples: {str(e)}")
             return []
 
-        return data.get("triples", [])
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "Extract relationships as triples. "
+                "Only include factual, meaningful relationships "
+                "(for example works_at, likes, lives_in, prefers, owns). "
+                "Do not include vague conversational triples like "
+                "(user, said, hello).",
+            ),
+            ("human", "{text}"),
+        ]
+    )
 
-    except Exception as e:
-        print(f"[ERROR] extract_triples: {str(e)}")
-        return []
+    try:
+        from services.llm_service import get_chat_model
+
+        chat_model = get_chat_model(temperature=0.1, max_tokens=512)
+        if chat_model is None or not hasattr(chat_model, "with_structured_output"):
+            raise RuntimeError("Structured output model unavailable")
+
+        chain = prompt | chat_model.with_structured_output(TripleExtractionResult)
+        parsed = chain.invoke({"text": text})
+        triples = parsed.triples if parsed else []
+        return [
+            {
+                "subject": item.subject,
+                "predicate": item.predicate,
+                "object": item.object,
+            }
+            for item in triples
+        ]
+
+    except Exception as exc:
+        print(f"[WARNING] structured triple extraction failed: {exc}")
+        try:
+            fallback_prompt = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract relationships as triples. "
+                        "Only include factual, meaningful relationships "
+                        "(e.g. works_at, likes, lives_in, prefers, owns). "
+                        "Do NOT include vague conversational triples like "
+                        "(user, said, hello). "
+                        'Return ONLY valid JSON in this format: {"triples":[{"subject":"","predicate":"","object":""}]}'
+                    ),
+                },
+                {"role": "user", "content": text},
+            ]
+
+            data = generate_response(fallback_prompt, expect_json=True)
+            if not isinstance(data, dict):
+                return []
+
+            triples = data.get("triples", [])
+            return triples if isinstance(triples, list) else []
+        except Exception as e:
+            print(f"[ERROR] extract_triples: {str(e)}")
+            return []
 
 
 def save_triples(conversation_id, triples):
@@ -229,3 +311,57 @@ def get_graph_context(conversation_id):
     except Exception as e:
         print(f"[ERROR] get_graph_context: {str(e)}")
         return []
+
+
+def get_user_graph_context_by_conversation(conversation_id):
+    try:
+        conversation = Conversation.query.filter_by(id=conversation_id).first()
+        if not conversation:
+            return []
+
+        triples = (
+            KGTriple.query.join(
+                Conversation, KGTriple.conversation_id == Conversation.id
+            )
+            .filter(Conversation.user_id == conversation.user_id)
+            .order_by(KGTriple.created_at.asc())
+            .all()
+        )
+
+        return [f"{t.subject} {t.predicate} {t.object}" for t in triples]
+
+    except Exception as e:
+        print(f"[ERROR] get_user_graph_context_by_conversation: {str(e)}")
+        return []
+
+
+def get_graph_payload(conversation_id):
+    triples = KGTriple.query.filter_by(conversation_id=conversation_id).all()
+    node_map = {}
+    links = []
+
+    for triple in triples:
+        if triple.subject and triple.subject not in node_map:
+            node_map[triple.subject] = {"id": triple.subject, "name": triple.subject}
+        if triple.object and triple.object not in node_map:
+            node_map[triple.object] = {"id": triple.object, "name": triple.object}
+
+        links.append(
+            {
+                "source": triple.subject,
+                "target": triple.object,
+                "label": triple.predicate,
+                "subject": triple.subject,
+                "predicate": triple.predicate,
+                "object": triple.object,
+            }
+        )
+
+    return {
+        "nodes": list(node_map.values()),
+        "edges": links,
+        "triples": [
+            {"subject": t.subject, "predicate": t.predicate, "object": t.object}
+            for t in triples
+        ],
+    }

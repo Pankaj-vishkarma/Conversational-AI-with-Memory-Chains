@@ -8,13 +8,30 @@ import tiktoken
 from services.llm_service import generate_response
 from services.memory_service import build_buffer_memory, get_summary
 from services.entity_service import get_entities
-from services.graph_service import get_graph_context
+from services.graph_service import get_graph_context, get_graph_payload
 
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models.conversation import Conversation
 
 
 memory_bp = Blueprint("memory", __name__)
+
+
+def _entity_type(name, description):
+    text = f"{name or ''} {description or ''}".lower()
+    if any(word in text for word in ["company", "organization", "org"]):
+        return "organization"
+    if any(word in text for word in ["project", "product"]):
+        return "project"
+    if any(word in text for word in ["city", "country", "location"]):
+        return "location"
+    if any(word in text for word in ["date", "time", "birthday", "deadline"]):
+        return "date"
+    if any(word in text for word in ["role", "job", "employer"]):
+        return "role"
+    if any(word in text for word in ["person", "name", "employee"]):
+        return "person"
+    return "entity"
 
 
 # ---------------- ENTITIES ----------------
@@ -40,6 +57,7 @@ def get_entities_api(conversation_id):
                 "data": [
                     {
                         "name": e.name,
+                        "type": _entity_type(e.name, e.description),
                         "description": e.description,
                         "updated_at": (
                             e.updated_at.isoformat() if e.updated_at else None
@@ -69,15 +87,17 @@ def get_graph_api(conversation_id):
         if not conversation:
             return jsonify({"error": "Unauthorized access"}), 403
 
-        triples = KGTriple.query.filter_by(conversation_id=conversation_id).all()
+        payload = get_graph_payload(conversation_id)
 
         return jsonify(
             {
                 "success": True,
-                "data": [
-                    {"subject": t.subject, "predicate": t.predicate, "object": t.object}
-                    for t in triples
-                ],
+                "data": {
+                    "nodes": payload["nodes"],
+                    "edges": payload["edges"],
+                    "relationships": payload["edges"],
+                    "triples": payload["triples"],
+                },
             }
         )
 
@@ -200,6 +220,23 @@ def compare_memory(conversation_id):
         graph_messages.append({"role": "user", "content": user_input})
         graph_response = generate_response(graph_messages)
 
+        # -------- HYBRID --------
+        hybrid_messages = [
+            {
+                "role": "system",
+                "content": "Answer using summary, known facts, relationships, and recent messages.",
+            }
+        ]
+        if summary:
+            hybrid_messages.append({"role": "system", "content": f"Summary:\n{summary}"})
+        if entities:
+            hybrid_messages.append({"role": "system", "content": "Entities:\n" + "\n".join(entities)})
+        if graph:
+            hybrid_messages.append({"role": "system", "content": "Graph:\n" + "\n".join(graph)})
+        hybrid_messages.extend(build_buffer_memory(conversation_id)[-5:])
+        hybrid_messages.append({"role": "user", "content": user_input})
+        hybrid_response = generate_response(hybrid_messages)
+
         return jsonify(
             {
                 "success": True,
@@ -209,6 +246,7 @@ def compare_memory(conversation_id):
                     "summary_memory": summary_response,
                     "entity_memory": entity_response,
                     "knowledge_graph_memory": graph_response,
+                    "hybrid_memory": hybrid_response,
                 },
             }
         )

@@ -1,11 +1,45 @@
-from groq import Groq
-from config import Config
 import json
 import re
 import time
+from typing import Any, Dict, List
 
-client = Groq(api_key=Config.GROQ_API_KEY)
-DEFAULT_MODEL = "llama-3.1-8b-instant"
+from config import Config
+from groq import Groq
+
+try:
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from langchain_openai import ChatOpenAI
+    from langchain_groq import ChatGroq
+
+    LANGCHAIN_AVAILABLE = True
+except Exception as exc:  # pragma: no cover - import guard
+    LANGCHAIN_AVAILABLE = False
+    AIMessage = HumanMessage = SystemMessage = None  # type: ignore
+    ChatOpenAI = ChatGroq = None  # type: ignore
+
+
+DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_TEMPERATURE = 0.5
+DEFAULT_MAX_TOKENS = 1024
+_GROQ_CLIENT = None
+
+
+def get_llm_unavailable_reason() -> str:
+    if Config.GROQ_API_KEY:
+        return ""
+    if Config.OPENAI_API_KEY:
+        return ""
+    if not LANGCHAIN_AVAILABLE:
+        return "LangChain packages are not installed in the active Python environment."
+    return "No API key configured. Set OPENAI_API_KEY or GROQ_API_KEY in server/.env."
+
+
+def _get_groq_client():
+    global _GROQ_CLIENT
+    if _GROQ_CLIENT is None and Config.GROQ_API_KEY:
+        _GROQ_CLIENT = Groq(api_key=Config.GROQ_API_KEY)
+    return _GROQ_CLIENT
 
 
 def safe_parse_json(text):
@@ -24,25 +58,83 @@ def safe_parse_json(text):
     return None
 
 
+def _to_langchain_messages(messages: List[Dict[str, str]]) -> List[Any]:
+    converted = []
+    for msg in messages or []:
+        role = (msg.get("role") or "user").lower()
+        content = msg.get("content") or ""
+        if role == "system":
+            converted.append(SystemMessage(content=content))
+        elif role == "assistant":
+            converted.append(AIMessage(content=content))
+        else:
+            converted.append(HumanMessage(content=content))
+    return converted
+
+
+def _select_model_name():
+    if Config.OPENAI_API_KEY:
+        return DEFAULT_OPENAI_MODEL
+    return DEFAULT_GROQ_MODEL
+
+
+def get_chat_model(temperature=DEFAULT_TEMPERATURE, max_tokens=DEFAULT_MAX_TOKENS):
+    if not LANGCHAIN_AVAILABLE:
+        return None
+
+    if Config.OPENAI_API_KEY:
+        return ChatOpenAI(
+            api_key=Config.OPENAI_API_KEY,
+            model=_select_model_name(),
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    if Config.GROQ_API_KEY:
+        return ChatGroq(
+            api_key=Config.GROQ_API_KEY,
+            model=_select_model_name(),
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    return None
+
+
+def _generate_with_groq_sdk(messages):
+    client = _get_groq_client()
+    if client is None:
+        raise RuntimeError(
+            "No API key configured. Set OPENAI_API_KEY or GROQ_API_KEY in server/.env."
+        )
+
+    response = client.chat.completions.create(
+        model=DEFAULT_GROQ_MODEL,
+        messages=messages,
+        temperature=DEFAULT_TEMPERATURE,
+        max_tokens=DEFAULT_MAX_TOKENS,
+    )
+    return response.choices[0].message.content
+
+
 def generate_response(messages, expect_json=False, retries=0):
     """
-    Groq response with single-model call and bounded retry.
+    LangChain-backed chat response with the same public interface.
     """
     allowed_retries = min(max(retries, 0), 1)
     last_error = None
 
     for attempt in range(allowed_retries + 1):
         try:
-            response = client.chat.completions.create(
-                model=DEFAULT_MODEL,
-                messages=messages,
-                temperature=0.5,
-                max_tokens=1024,
-            )
+            chat_model = get_chat_model()
+            if chat_model is not None:
+                response = chat_model.invoke(_to_langchain_messages(messages))
+                content = getattr(response, "content", "") or ""
+            elif Config.GROQ_API_KEY:
+                content = _generate_with_groq_sdk(messages) or ""
+            else:
+                raise RuntimeError(get_llm_unavailable_reason())
 
-            content = response.choices[0].message.content
-
-            # JSON safe handling
             if expect_json:
                 parsed = safe_parse_json(content)
                 if parsed:
@@ -52,11 +144,8 @@ def generate_response(messages, expect_json=False, retries=0):
 
         except Exception as e:
             last_error = str(e)
-            print(
-                f"[ERROR] Model {DEFAULT_MODEL} attempt {attempt+1}: {last_error}"
-            )
+            print(f"[ERROR] Model attempt {attempt+1}: {last_error}")
 
-            # For rate limit errors, do not keep retrying.
             if "429" in last_error:
                 return (
                     {"error": "AI is temporarily busy, please try again."}

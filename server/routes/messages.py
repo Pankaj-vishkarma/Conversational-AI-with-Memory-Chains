@@ -5,6 +5,7 @@ from services.chain_service import run_conversation_chain
 from services.memory_service import update_summary
 from services.entity_service import extract_entities_from_text, save_entities
 from services.graph_service import extract_triples, save_triples
+from services.memory_service import SUMMARY_TRIGGER_COUNT
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -120,7 +121,10 @@ def send_message():
             user_message
         ) or _contains_personal_info(user_message) or is_memory_instruction
         message_count = len(get_conversation_messages(conversation_id))
-        should_update_summary = message_count >= 3 and message_count % 4 == 0
+        should_update_summary = (
+            message_count >= SUMMARY_TRIGGER_COUNT
+            and message_count % SUMMARY_TRIGGER_COUNT == 0
+        )
 
         # Background enrichment (throttled)
         def run_memory_tasks():
