@@ -198,7 +198,9 @@ def _format_user_facts_for_prompt(facts):
     """
     if not facts:
         return "None"
-    return "\n".join([f"* You told me your {label} is {value}." for label, value in facts])
+    return "\n".join(
+        [f"* You told me your {label} is {value}." for label, value in facts]
+    )
 
 
 def _rewrite_identity_confusions(response_text):
@@ -252,7 +254,9 @@ def _count_tokens(text):
         return max(1, len(text) // 4)
 
 
-def _fit_recent_messages(history, max_tokens=MAX_CONTEXT_TOKENS, max_messages=RECENT_MESSAGE_LIMIT):
+def _fit_recent_messages(
+    history, max_tokens=MAX_CONTEXT_TOKENS, max_messages=RECENT_MESSAGE_LIMIT
+):
     selected = []
     used = 0
     for msg in reversed(history or []):
@@ -369,7 +373,9 @@ def build_context(conversation_id, intent, user_message):
     effective_memory = _resolve_memory_strategy(conversation_id, intent, user_message)
 
     if intent == "analysis" or effective_memory in {"summary", "hybrid"}:
-        summary = get_summary(conversation_id) or _get_cross_session_summary(conversation_id)
+        summary = get_summary(conversation_id) or _get_cross_session_summary(
+            conversation_id
+        )
         if summary:
             context.append(
                 {"role": "system", "content": f"Conversation summary:\n{summary}"}
@@ -385,7 +391,9 @@ def build_context(conversation_id, intent, user_message):
         if conversation_entities:
             combined.append(
                 "Conversation Context:\n"
-                + "\n".join([f"* You told me: {item}" for item in conversation_entities])
+                + "\n".join(
+                    [f"* You told me: {item}" for item in conversation_entities]
+                )
             )
 
         if combined:
@@ -407,7 +415,9 @@ def build_context(conversation_id, intent, user_message):
 
 def _resolve_memory_strategy(conversation_id, intent, user_message):
     conversation = Conversation.query.filter_by(id=conversation_id).first()
-    configured = ((conversation.memory_type if conversation else "buffer") or "buffer").lower()
+    configured = (
+        (conversation.memory_type if conversation else "buffer") or "buffer"
+    ).lower()
     history = build_buffer_memory(conversation_id, max_messages=0)
 
     if configured == "hybrid":
@@ -423,7 +433,11 @@ def _resolve_memory_strategy(conversation_id, intent, user_message):
 
 def _memory_flags(conversation, intent, user_message):
     conversation_id = conversation.id if conversation else None
-    memory_type = _resolve_memory_strategy(conversation_id, intent, user_message) if conversation_id else "buffer"
+    memory_type = (
+        _resolve_memory_strategy(conversation_id, intent, user_message)
+        if conversation_id
+        else "buffer"
+    )
 
     flags = {
         "use_summary": memory_type in {"summary", "hybrid"},
@@ -566,7 +580,9 @@ def run_conversation_chain(conversation_id, user_message):
     else:
         prompt = None
 
+    # MAIN LCEL FLOW
     if chat_model is not None and LCEL_AVAILABLE:
+
         def _seed_payload(_):
             return {
                 "conversation_id": conversation_id,
@@ -618,14 +634,18 @@ def run_conversation_chain(conversation_id, user_message):
             ),
             entities=RunnableLambda(
                 lambda payload: (
-                    "\n".join(get_entities(payload["conversation_id"]))
+                    "\n".join(get_merged_entities(payload["conversation_id"])[1])
                     if payload["memory_flags"]["use_entities"]
                     else ""
                 )
             ),
             graph_context=RunnableLambda(
                 lambda payload: (
-                    "\n".join(get_user_graph_context_by_conversation(payload["conversation_id"]))
+                    "\n".join(
+                        get_user_graph_context_by_conversation(
+                            payload["conversation_id"]
+                        )
+                    )
                     if payload["memory_flags"]["use_graph"]
                     else ""
                 )
@@ -664,24 +684,34 @@ def run_conversation_chain(conversation_id, user_message):
             ],
             last=RunnableLambda(_rewrite_identity_confusions),
         )
-        return chain.invoke(None)
 
+        # CRITICAL FIX (TRY-CATCH ADDED)
+        try:
+            return chain.invoke(None)
+        except Exception as e:
+            print("[CHAIN ERROR]:", str(e))
+
+    # FALLBACK FLOW (UNCHANGED LOGIC)
     intent = classify_intent(user_message)
+
     fallback_messages = [
         {
             "role": "system",
             "content": _build_system_prompt(
                 {
                     "persona_prompt": _resolve_persona_prompt(conversation, intent),
-                    "self_facts": _format_user_facts_for_prompt(
-                        get_merged_entities(conversation_id)[0]
-                    )
-                    if _is_self_memory_query(user_message)
-                    else "",
+                    "self_facts": (
+                        _format_user_facts_for_prompt(
+                            get_merged_entities(conversation_id)[0]
+                        )
+                        if _is_self_memory_query(user_message)
+                        else ""
+                    ),
                 }
             ),
         }
     ]
+
     fallback_messages.extend(build_context(conversation_id, intent, user_message))
     fallback_messages.append({"role": "user", "content": user_message})
 

@@ -109,9 +109,7 @@ def _normalize_entity_name(name):
 
 class ExtractedEntity(BaseModel):
     name: str = Field(..., description="Canonical name of the entity")
-    description: str = Field(
-        ..., description="Short factual description of the entity"
-    )
+    description: str = Field(..., description="Short factual description of the entity")
 
 
 class EntityExtractionResult(BaseModel):
@@ -128,9 +126,9 @@ def extract_entities_from_text(text):
     """
     Use LangChain structured output to extract entities from user text.
     """
-    if not LANGCHAIN_ENTITY_AVAILABLE:
-        raise_runtime = RuntimeError("LangChain entity extraction unavailable")
-        print(f"[WARNING] structured entity extraction failed: {raise_runtime}")
+
+    # SAFE FALLBACK FUNCTION
+    def fallback_extraction():
         try:
             fallback_prompt = [
                 {
@@ -145,119 +143,103 @@ def extract_entities_from_text(text):
                 },
                 {"role": "user", "content": text},
             ]
+
             data = generate_response(fallback_prompt, expect_json=True)
 
             if not isinstance(data, dict):
                 return []
+
             raw_entities = data.get("entities", [])
             if not isinstance(raw_entities, list):
                 return []
 
             cleaned = []
             seen = set()
-            for ent in raw_entities:
-                if not isinstance(ent, dict):
-                    continue
-                name = _clean(ent.get("name"))
-                desc = _clean(ent.get("description"))
-                if _is_invalid(name) or _is_invalid(desc):
-                    continue
-                if not _is_meaningful_entity(name, desc):
-                    continue
-                key = (name.lower(), desc.lower())
-                if key in seen:
-                    continue
-                seen.add(key)
-                cleaned.append({"name": name, "description": desc})
-            return cleaned
-        except Exception as e:
-            print(f"[ERROR] extract_entities: {str(e)}")
-            return []
 
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                "Extract important entities from the text. "
-                "Only include meaningful entities such as person, company, organization, "
-                "project, preference, date/time, role, or location. "
-                "Do not include generic words like thing, something, work, task, or info.",
-            ),
-            ("human", "{text}"),
-        ]
-    )
-
-    try:
-        from services.llm_service import get_chat_model
-
-        chat_model = get_chat_model(temperature=0.1, max_tokens=512)
-        if chat_model is None or not hasattr(chat_model, "with_structured_output"):
-            raise RuntimeError("Structured output model unavailable")
-
-        chain = prompt | chat_model.with_structured_output(EntityExtractionResult)
-        parsed = chain.invoke({"text": text})
-        raw_entities = parsed.entities if parsed else []
-
-        cleaned = []
-        seen = set()
-        for ent in raw_entities:
-            name, desc = _coerce_entity_fields(ent)
-            name = _clean(name)
-            desc = _clean(desc)
-            if _is_invalid(name) or _is_invalid(desc):
-                continue
-            if not _is_meaningful_entity(name, desc):
-                continue
-            key = (name.lower(), desc.lower())
-            if key in seen:
-                continue
-            seen.add(key)
-            cleaned.append({"name": name, "description": desc})
-        return cleaned
-
-    except Exception as exc:
-        print(f"[WARNING] structured entity extraction failed: {exc}")
-        try:
-            fallback_prompt = [
-                {
-                    "role": "system",
-                    "content": (
-                        "Extract important entities from the text. "
-                        "Only include meaningful entities such as person, company, organization, "
-                        "project, preference, date/time, role, or location. "
-                        "Do NOT include generic words like thing, something, work, task, or info. "
-                        'Return ONLY valid JSON in this format: {"entities": [{"name": "...", "description": "..."}]}'
-                    ),
-                },
-                {"role": "user", "content": text},
-            ]
-            data = generate_response(fallback_prompt, expect_json=True)
-
-            if not isinstance(data, dict):
-                return []
-            raw_entities = data.get("entities", [])
-            if not isinstance(raw_entities, list):
-                return []
-
-            cleaned = []
-            seen = set()
             for ent in raw_entities:
                 name, desc = _coerce_entity_fields(ent)
                 name = _clean(name)
                 desc = _clean(desc)
+
                 if _is_invalid(name) or _is_invalid(desc):
                     continue
                 if not _is_meaningful_entity(name, desc):
                     continue
+
                 key = (name.lower(), desc.lower())
                 if key in seen:
                     continue
+
                 seen.add(key)
                 cleaned.append({"name": name, "description": desc})
+
             return cleaned
+
         except Exception as e:
-            print(f"[ERROR] extract_entities: {str(e)}")
+            print(f"[ERROR] fallback entity extraction: {str(e)}")
             return []
+
+    if not LANGCHAIN_ENTITY_AVAILABLE:
+        print("[WARNING] LangChain not available → using fallback")
+        return fallback_extraction()
+
+    # LangChain structured extraction
+    try:
+        from services.llm_service import get_chat_model
+
+        chat_model = get_chat_model(temperature=0.1, max_tokens=512)
+
+        if chat_model is None:
+            print("[WARNING] chat_model is None → using fallback")
+            return fallback_extraction()
+
+        if not hasattr(chat_model, "with_structured_output"):
+            print("[WARNING] structured output not supported → using fallback")
+            return fallback_extraction()
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "Extract important entities from the text. "
+                    "Only include meaningful entities such as person, company, organization, "
+                    "project, preference, date/time, role, or location. "
+                    "Do not include generic words like thing, something, work, task, or info.",
+                ),
+                ("human", "{text}"),
+            ]
+        )
+
+        chain = prompt | chat_model.with_structured_output(EntityExtractionResult)
+        parsed = chain.invoke({"text": text})
+
+        raw_entities = parsed.entities if parsed else []
+
+        cleaned = []
+        seen = set()
+
+        for ent in raw_entities:
+            name, desc = _coerce_entity_fields(ent)
+            name = _clean(name)
+            desc = _clean(desc)
+
+            if _is_invalid(name) or _is_invalid(desc):
+                continue
+            if not _is_meaningful_entity(name, desc):
+                continue
+
+            key = (name.lower(), desc.lower())
+            if key in seen:
+                continue
+
+            seen.add(key)
+            cleaned.append({"name": name, "description": desc})
+
+        return cleaned
+
+    except Exception as exc:
+        print(f"[WARNING] structured extraction failed → fallback: {exc}")
+        return fallback_extraction()
 
 
 def save_entities(conversation_id, entities):

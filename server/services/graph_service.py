@@ -171,9 +171,9 @@ def extract_triples(text):
     """
     Extract subject-predicate-object triples using LangChain structured output.
     """
-    if not LANGCHAIN_GRAPH_AVAILABLE:
-        raise_runtime = RuntimeError("LangChain graph extraction unavailable")
-        print(f"[WARNING] structured triple extraction failed: {raise_runtime}")
+
+    # SAFE FALLBACK FUNCTION
+    def fallback_extraction():
         try:
             fallback_prompt = [
                 {
@@ -191,39 +191,54 @@ def extract_triples(text):
             ]
 
             data = generate_response(fallback_prompt, expect_json=True)
+
             if not isinstance(data, dict):
                 return []
 
             triples = data.get("triples", [])
             return triples if isinstance(triples, list) else []
+
         except Exception as e:
-            print(f"[ERROR] extract_triples: {str(e)}")
+            print(f"[ERROR] fallback triple extraction: {str(e)}")
             return []
 
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                "Extract relationships as triples. "
-                "Only include factual, meaningful relationships "
-                "(for example works_at, likes, lives_in, prefers, owns). "
-                "Do not include vague conversational triples like "
-                "(user, said, hello).",
-            ),
-            ("human", "{text}"),
-        ]
-    )
+    # LangChain unavailable → direct fallback
+    if not LANGCHAIN_GRAPH_AVAILABLE:
+        print("[WARNING] LangChain graph not available → fallback")
+        return fallback_extraction()
 
     try:
         from services.llm_service import get_chat_model
 
         chat_model = get_chat_model(temperature=0.1, max_tokens=512)
-        if chat_model is None or not hasattr(chat_model, "with_structured_output"):
-            raise RuntimeError("Structured output model unavailable")
+
+        if chat_model is None:
+            print("[WARNING] chat_model None → fallback")
+            return fallback_extraction()
+
+        if not hasattr(chat_model, "with_structured_output"):
+            print("[WARNING] structured output not supported → fallback")
+            return fallback_extraction()
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "Extract relationships as triples. "
+                    "Only include factual, meaningful relationships "
+                    "(for example works_at, likes, lives_in, prefers, owns). "
+                    "Do not include vague conversational triples like "
+                    "(user, said, hello).",
+                ),
+                ("human", "{text}"),
+            ]
+        )
 
         chain = prompt | chat_model.with_structured_output(TripleExtractionResult)
         parsed = chain.invoke({"text": text})
+
         triples = parsed.triples if parsed else []
+
         return [
             {
                 "subject": item.subject,
@@ -234,32 +249,8 @@ def extract_triples(text):
         ]
 
     except Exception as exc:
-        print(f"[WARNING] structured triple extraction failed: {exc}")
-        try:
-            fallback_prompt = [
-                {
-                    "role": "system",
-                    "content": (
-                        "Extract relationships as triples. "
-                        "Only include factual, meaningful relationships "
-                        "(e.g. works_at, likes, lives_in, prefers, owns). "
-                        "Do NOT include vague conversational triples like "
-                        "(user, said, hello). "
-                        'Return ONLY valid JSON in this format: {"triples":[{"subject":"","predicate":"","object":""}]}'
-                    ),
-                },
-                {"role": "user", "content": text},
-            ]
-
-            data = generate_response(fallback_prompt, expect_json=True)
-            if not isinstance(data, dict):
-                return []
-
-            triples = data.get("triples", [])
-            return triples if isinstance(triples, list) else []
-        except Exception as e:
-            print(f"[ERROR] extract_triples: {str(e)}")
-            return []
+        print(f"[WARNING] structured triple extraction failed → fallback: {exc}")
+        return fallback_extraction()
 
 
 def save_triples(conversation_id, triples):

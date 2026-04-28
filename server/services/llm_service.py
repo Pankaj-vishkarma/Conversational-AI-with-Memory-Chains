@@ -19,7 +19,6 @@ except Exception as exc:  # pragma: no cover - import guard
 
 
 DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_TEMPERATURE = 0.5
 DEFAULT_MAX_TOKENS = 1024
 _GROQ_CLIENT = None
@@ -28,11 +27,9 @@ _GROQ_CLIENT = None
 def get_llm_unavailable_reason() -> str:
     if Config.GROQ_API_KEY:
         return ""
-    if Config.OPENAI_API_KEY:
-        return ""
     if not LANGCHAIN_AVAILABLE:
         return "LangChain packages are not installed in the active Python environment."
-    return "No API key configured. Set OPENAI_API_KEY or GROQ_API_KEY in server/.env."
+    return "No API key configured. Set GROQ_API_KEY in server/.env."
 
 
 def _get_groq_client():
@@ -72,41 +69,30 @@ def _to_langchain_messages(messages: List[Dict[str, str]]) -> List[Any]:
     return converted
 
 
-def _select_model_name():
-    if Config.OPENAI_API_KEY:
-        return DEFAULT_OPENAI_MODEL
-    return DEFAULT_GROQ_MODEL
-
-
 def get_chat_model(temperature=DEFAULT_TEMPERATURE, max_tokens=DEFAULT_MAX_TOKENS):
+    """
+    Always return a Groq LangChain model for stability.
+    """
     if not LANGCHAIN_AVAILABLE:
+        print("LangChain not available")
         return None
 
-    if Config.OPENAI_API_KEY:
-        return ChatOpenAI(
-            api_key=Config.OPENAI_API_KEY,
-            model=_select_model_name(),
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+    if not Config.GROQ_API_KEY:
+        print("GROQ_API_KEY missing")
+        return None
 
-    if Config.GROQ_API_KEY:
-        return ChatGroq(
-            api_key=Config.GROQ_API_KEY,
-            model=_select_model_name(),
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-
-    return None
+    return ChatGroq(
+        api_key=Config.GROQ_API_KEY,
+        model=DEFAULT_GROQ_MODEL,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 def _generate_with_groq_sdk(messages):
     client = _get_groq_client()
     if client is None:
-        raise RuntimeError(
-            "No API key configured. Set OPENAI_API_KEY or GROQ_API_KEY in server/.env."
-        )
+        raise RuntimeError("No API key configured. Set GROQ_API_KEY in server/.env.")
 
     response = client.chat.completions.create(
         model=DEFAULT_GROQ_MODEL,
@@ -119,7 +105,7 @@ def _generate_with_groq_sdk(messages):
 
 def generate_response(messages, expect_json=False, retries=0):
     """
-    LangChain-backed chat response with the same public interface.
+    LangChain-backed chat response with fallback support.
     """
     allowed_retries = min(max(retries, 0), 1)
     last_error = None
@@ -127,10 +113,13 @@ def generate_response(messages, expect_json=False, retries=0):
     for attempt in range(allowed_retries + 1):
         try:
             chat_model = get_chat_model()
+            print("DEBUG: chat_model =", chat_model)
+
             if chat_model is not None:
                 response = chat_model.invoke(_to_langchain_messages(messages))
                 content = getattr(response, "content", "") or ""
             elif Config.GROQ_API_KEY:
+                print("Using Groq SDK fallback")
                 content = _generate_with_groq_sdk(messages) or ""
             else:
                 raise RuntimeError(get_llm_unavailable_reason())
