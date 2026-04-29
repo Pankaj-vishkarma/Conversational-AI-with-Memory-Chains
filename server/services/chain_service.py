@@ -79,7 +79,8 @@ def classify_intent(user_message):
 
 
 def _is_self_memory_query(user_message):
-    text = (user_message or "").strip().lower()
+    text = (user_message or "").lower()
+    text = re.sub(r"[^\w\s]", "", text)
     return any(marker in text for marker in SELF_QUERY_MARKERS)
 
 
@@ -360,7 +361,17 @@ def get_merged_entities(conversation_id):
                 continue
 
             # Only add to conversation_context if not a recognized labeled fact
-            if raw_desc.lower() not in {"person", "employee", "manager", "entity"}:
+            if raw_desc.lower() not in {
+                "person",
+                "employee",
+                "manager",
+                "entity",
+                "work",
+                "job",
+                "activity",
+                "role",
+                "something",
+            }:
                 conversation_context.append(line)
 
         # Step 3: Return deduplicated results
@@ -497,7 +508,7 @@ def _memory_flags(conversation, intent, user_message):
     if intent in {"analysis", "question"} and memory_type in {"buffer", "kg", "hybrid"}:
         flags["use_graph"] = True
 
-    if _is_self_memory_query(user_message):
+    if _is_self_memory_query(user_message) or "name" in user_message.lower():
         facts, _ = get_merged_entities(conversation_id)
         if facts:
             flags["use_entities"] = True
