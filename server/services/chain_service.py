@@ -84,8 +84,8 @@ def _is_self_memory_query(user_message):
 
 
 def _infer_fact_label_value(name, description):
-    raw_name = (name or "").strip()
-    raw_desc = (description or "").strip()
+    raw_name = str(name or "").strip()
+    raw_desc = str(description or "").strip()
     combined = f"{raw_name} {raw_desc}".lower()
     generic_type_values = {
         "person",
@@ -290,20 +290,22 @@ def get_merged_entities(conversation_id):
         # Step 1: Merge by normalized entity name (keep latest by timestamp)
         merged_by_name = {}
         for entity in all_entities:
-            if not entity or not entity.name:
+            if not entity or entity.name is None:
                 continue
 
-            key = (entity.name or "").strip().lower()
-            if not key:
+            entity_name = str(entity.name or "").strip()
+            if not entity_name:
                 continue
 
+            key = entity_name.lower()
+            entity_desc = str(entity.description or "").strip()
             entity_ts = entity.updated_at or entity.created_at
             existing = merged_by_name.get(key)
             # Keep if: no existing entry OR new entry has a later timestamp
             if not existing or (entity_ts and entity_ts > existing.get("updated_at")):
                 merged_by_name[key] = {
-                    "name": entity.name.strip(),
-                    "description": (entity.description or "").strip(),
+                    "name": entity_name,
+                    "description": entity_desc,
                     "updated_at": entity_ts,
                 }
 
@@ -313,12 +315,29 @@ def get_merged_entities(conversation_id):
         conversation_context = []
 
         for item in merged_by_name.values():
-            raw_name = item["name"]
-            raw_desc = item["description"]
+            raw_name = str(item.get("name") or "").strip()
+            raw_desc = str(item.get("description") or "").strip()
             line = f"{raw_name}: {raw_desc}"
 
-            label, value = _infer_fact_label_value(raw_name, raw_desc)
+            try:
+                label, value = _infer_fact_label_value(raw_name, raw_desc)
+            except Exception as exc:
+                print(
+                    "[WARNING] get_merged_entities inference failed:",
+                    raw_name,
+                    raw_desc,
+                    str(exc),
+                )
+                conversation_context.append(line)
+                continue
+
             if label and value:
+                label = str(label).strip()
+                value = str(value).strip()
+                if not label or not value:
+                    conversation_context.append(line)
+                    continue
+
                 existing = labeled_user_facts.get(label)
                 # Strict latest-value-wins: keep if no existing OR newer timestamp
                 if not existing or (
@@ -339,12 +358,17 @@ def get_merged_entities(conversation_id):
             conversation_context.append(line)
 
         # Step 3: Return deduplicated results
-        user_facts = [
-            (label, payload["value"])
-            for label, payload in sorted(
-                labeled_user_facts.items(), key=lambda x: x[0].lower()
-            )
-        ]
+        user_facts = []
+        for label, payload in sorted(
+            labeled_user_facts.items(),
+            key=lambda x: str(x[0]).lower() if x and x[0] is not None else "",
+        ):
+            if not isinstance(payload, dict):
+                continue
+            value = payload.get("value")
+            if value is None:
+                continue
+            user_facts.append((label, value))
         conversation_context.sort(key=lambda x: x.lower())
 
         # Debug logging
