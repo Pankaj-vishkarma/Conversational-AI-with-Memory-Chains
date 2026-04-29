@@ -45,7 +45,16 @@ async function request(method, path, body = null) {
   }
 
   const text = await res.text();
-  return text ? JSON.parse(text) : null;
+
+  // FIX 1: Safe parsing (no crash on plain text)
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    // fallback for plain text response
+    return { message: text };
+  }
 }
 
 function sleep(ms) {
@@ -103,12 +112,13 @@ export function deleteConversation(conversationId) {
 }
 
 // Messages
-export function getMessages(conversationId) {
-  return request('GET', `/api/messages/${conversationId}`);
+// FIX 2: retry added (important)
+export function sendMessage(data) {
+  return requestWithRetry('POST', '/api/messages/', data);
 }
 
-export function sendMessage(data) {
-  return request('POST', '/api/messages/', data);
+export function getMessages(conversationId) {
+  return request('GET', `/api/messages/${conversationId}`);
 }
 
 // Memory

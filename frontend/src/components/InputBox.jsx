@@ -5,9 +5,15 @@ export default function InputBox({ onSend, disabled }) {
 
   function handleSubmit(e) {
     e.preventDefault();
+
+    if (disabled) return;
+
     const trimmed = text.trim();
-    if (!trimmed || disabled) return;
+    if (!trimmed) return;
+
     onSend(trimmed);
+
+    // clear input immediately to prevent duplicate sends
     setText('');
   }
 
