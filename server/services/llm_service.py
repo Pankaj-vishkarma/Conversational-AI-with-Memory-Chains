@@ -102,31 +102,49 @@ def _generate_with_groq_sdk(messages):
     return response.choices[0].message.content
 
 
-def generate_response(messages, expect_json=False, retries=0):
+def generate_response(messages, expect_json=False, retries=2):
     """
-    LangChain-backed chat response with fallback support.
+    LangChain-backed chat response with retry + safe fallback.
     """
-    allowed_retries = min(max(retries, 0), 1)
+    allowed_retries = max(retries, 2)
     last_error = None
 
     for attempt in range(allowed_retries + 1):
         try:
             chat_model = get_chat_model()
-            print("DEBUG: chat_model =", chat_model)
 
             if chat_model is not None:
                 response = chat_model.invoke(_to_langchain_messages(messages))
                 content = getattr(response, "content", "") or ""
             elif Config.GROQ_API_KEY:
-                print("Using Groq SDK fallback")
                 content = _generate_with_groq_sdk(messages) or ""
             else:
                 raise RuntimeError(get_llm_unavailable_reason())
 
+            # EMPTY RESPONSE FIX
+            if not content or not content.strip():
+                print("[WARNING] Empty LLM response")
+                if attempt < allowed_retries:
+                    time.sleep(1)
+                    continue
+                return (
+                    {"error": "Empty response from AI"}
+                    if expect_json
+                    else "Please try again"
+                )
+
+            # JSON FIX
             if expect_json:
                 parsed = safe_parse_json(content)
                 if parsed:
                     return parsed
+
+                print("[WARNING] JSON parse failed, retrying...")
+                if attempt < allowed_retries:
+                    time.sleep(1)
+                    continue
+
+                return {"error": "Invalid JSON from AI"}
 
             return content
 

@@ -137,19 +137,19 @@ def _infer_fact_label_value(name, description):
         return "name", raw_name or raw_desc
 
     if raw_name and _contains_any(raw_desc.lower(), ["person", "human", "individual"]):
-        combined_text = f"{raw_name} {raw_desc}".lower()
-
-        # Only treat as user name if explicitly user-related
-        if any(x in combined_text for x in ["my name", "user name", "i am", "i'm"]):
+        # Accept proper names (Rahul, Pankaj, etc.)
+        if raw_name[0].isupper() and len(raw_name) > 2:
             return "name", raw_name
 
-        # Otherwise ignore (this is some other person, not the user)
         return None, None
 
     if _contains_any(combined, ["prefer", "preference", "likes", "favorite"]):
         if raw_name.lower() in ["preference", "preferred language", "preferred stack"]:
             return "preference", raw_desc
-        return "preference", raw_desc or raw_name
+        value = raw_desc if raw_desc and raw_desc.lower() != "preference" else raw_name
+        if value and value.lower() not in generic_type_values:
+            return "preference", value
+        return None, None
 
     if _contains_any(combined, ["language", "python", "javascript", "java", "golang"]):
         value = _best_fact_value(raw_desc, raw_name, generic_type_values)
@@ -162,8 +162,9 @@ def _infer_fact_label_value(name, description):
     if _contains_any(
         combined, ["company", "organization", "org", "employer", "work at", "works at"]
     ):
-        value = _best_fact_value(raw_desc, raw_name, generic_type_values)
-        return ("company", value) if value else (None, None)
+        if raw_name and raw_name.lower() not in generic_type_values:
+            return "company", raw_name
+        return None, None
 
     if _contains_any(
         combined, ["employee id", "emp-", "employee number", "staff id", "id"]
@@ -315,6 +316,9 @@ def get_merged_entities(conversation_id):
         labeled_user_facts = {}
         conversation_context = []
 
+        if not merged_by_name:
+            return [], []
+
         for item in merged_by_name.values():
             raw_name = str(item.get("name") or "").strip()
             raw_desc = str(item.get("description") or "").strip()
@@ -356,7 +360,8 @@ def get_merged_entities(conversation_id):
                 continue
 
             # Only add to conversation_context if not a recognized labeled fact
-            conversation_context.append(line)
+            if raw_desc.lower() not in {"person", "employee", "manager", "entity"}:
+                conversation_context.append(line)
 
         # Step 3: Return deduplicated results
         user_facts = []
@@ -493,7 +498,9 @@ def _memory_flags(conversation, intent, user_message):
         flags["use_graph"] = True
 
     if _is_self_memory_query(user_message):
-        flags["use_entities"] = True
+        facts, _ = get_merged_entities(conversation_id)
+        if facts:
+            flags["use_entities"] = True
 
     return flags
 
@@ -752,6 +759,7 @@ def run_conversation_chain(conversation_id, user_message):
             )
         except Exception as e:
             print("[CHAIN ERROR]:", str(e))
+            return "Something went wrong. Please try again."
 
     # FALLBACK FLOW (UNCHANGED LOGIC)
     print("FALLBACK_RUNNING")

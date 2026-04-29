@@ -264,6 +264,10 @@ def save_entities(conversation_id, entities):
                 continue
             if not name or len(name) < 2:
                 continue
+            if name.lower() in GENERIC_ENTITY_WORDS:
+                continue
+            if desc.lower() in GENERIC_ENTITY_WORDS:
+                continue
 
             normalized_updates[_normalize_entity_name(name)] = {
                 "name": name,
