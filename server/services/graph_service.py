@@ -139,16 +139,25 @@ def _is_meaningful_triple(subject, predicate, obj):
     # Keep graph edges factual and non-trivial.
     if not _is_meaningful_graph_entity(s) or not _is_meaningful_graph_entity(o):
         return False
+
     if lp in VAGUE_PREDICATES:
         return False
-    if lp not in ALLOWED_PREDICATES:
+
+    # allow meaningful predicate hints also
+    if lp not in ALLOWED_PREDICATES and not any(
+        h in lp for h in MEANINGFUL_PREDICATE_HINTS
+    ):
         return False
+
     if len(p) < 2:
         return False
+
     if len(s) < 2 and ls != "user":
         return False
+
     if len(o) < 2 and lo != "user":
         return False
+
     if ls == lo:
         return False
 
@@ -184,6 +193,15 @@ def _clean_triples(raw_triples):
 
         seen.add(key)
         cleaned.append({"subject": subject, "predicate": predicate, "object": obj})
+
+        # FIX: link user with entities for cross-memory
+        if subject != "user" and obj != "user":
+            user_key = ("user", "related_to", subject.lower())
+            if user_key not in seen:
+                seen.add(user_key)
+                cleaned.append(
+                    {"subject": "user", "predicate": "related_to", "object": subject}
+                )
 
     return cleaned
 
@@ -358,7 +376,16 @@ def get_user_graph_context(user_id):
             .all()
         )
 
-        return [f"{t.subject} {t.predicate} {t.object}" for t in triples]
+        filtered = []
+        for t in triples:
+            subject = (t.subject or "").lower()
+            obj = (t.object or "").lower()
+
+            # FIX: only include user-related triples
+            if subject == "user" or obj == "user":
+                filtered.append(f"{t.subject} {t.predicate} {t.object}")
+
+        return filtered
 
     except Exception as e:
         print(f"[ERROR] get_user_graph_context: {str(e)}")

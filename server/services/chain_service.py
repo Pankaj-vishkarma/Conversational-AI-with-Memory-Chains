@@ -137,13 +137,14 @@ def _infer_fact_label_value(name, description):
         return "name", raw_name or raw_desc
 
     if raw_name and _contains_any(raw_desc.lower(), ["person", "human", "individual"]):
-        parts = [p for p in raw_name.replace(".", " ").split() if p]
-        if len(parts) >= 2:
+        combined_text = f"{raw_name} {raw_desc}".lower()
+
+        # Only treat as user name if explicitly user-related
+        if any(x in combined_text for x in ["my name", "user name", "i am", "i'm"]):
             return "name", raw_name
-        if raw_name[0].isupper() and raw_name.isalpha():
-            return "name", raw_name
-        if raw_desc.strip().lower() in {"person", "human", "individual"}:
-            return "name", raw_name
+
+        # Otherwise ignore (this is some other person, not the user)
+        return None, None
 
     if _contains_any(combined, ["prefer", "preference", "likes", "favorite"]):
         if raw_name.lower() in ["preference", "preferred language", "preferred stack"]:
@@ -677,7 +678,15 @@ def run_conversation_chain(conversation_id, user_message):
             ),
             entities=RunnableLambda(
                 lambda payload: (
-                    "\n".join(get_merged_entities(payload["conversation_id"])[1])
+                    "\n".join(
+                        [
+                            item
+                            for item in get_merged_entities(payload["conversation_id"])[
+                                1
+                            ]
+                            if len(item.split(":")[0].strip()) > 2
+                        ]
+                    )
                     if payload["memory_flags"]["use_entities"]
                     else ""
                 )

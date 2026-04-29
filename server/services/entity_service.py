@@ -77,8 +77,12 @@ def _is_meaningful_entity(name, description):
     lower_desc = clean_desc.lower()
     combined = f"{lower_name} {lower_desc}"
 
-    if not clean_name or not clean_desc:
+    if not clean_name:
         return False
+
+    # allow missing description
+    if not clean_desc:
+        clean_desc = "entity"
 
     # Keep explicit memory-instruction fallback notes.
     if lower_name == "memory_note":
@@ -160,11 +164,12 @@ def extract_entities_from_text(text):
             for ent in raw_entities:
                 name, desc = _coerce_entity_fields(ent)
                 name = _clean(name)
-                desc = _clean(desc)
+                desc = _clean(desc) or "entity"
 
                 if _is_invalid(name) or _is_invalid(desc):
                     continue
-                if not _is_meaningful_entity(name, desc):
+                # allow entity even if description weak but name is strong
+                if not name or len(name) < 2:
                     continue
 
                 key = (name.lower(), desc.lower())
@@ -222,11 +227,11 @@ def extract_entities_from_text(text):
         for ent in raw_entities:
             name, desc = _coerce_entity_fields(ent)
             name = _clean(name)
-            desc = _clean(desc)
+            desc = _clean(desc) or "entity"
 
             if _is_invalid(name) or _is_invalid(desc):
                 continue
-            if not _is_meaningful_entity(name, desc):
+            if not name or len(name) < 2:
                 continue
 
             key = (name.lower(), desc.lower())
@@ -253,11 +258,11 @@ def save_entities(conversation_id, entities):
         normalized_updates = {}
         for ent in entities:
             name = _clean(ent.get("name"))
-            desc = _clean(ent.get("description"))
+            desc = _clean(ent.get("description")) or "entity"
 
             if _is_invalid(name) or _is_invalid(desc):
                 continue
-            if not _is_meaningful_entity(name, desc):
+            if not name or len(name) < 2:
                 continue
 
             normalized_updates[_normalize_entity_name(name)] = {
