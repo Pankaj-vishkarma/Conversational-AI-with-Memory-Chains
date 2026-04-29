@@ -58,7 +58,7 @@ def get_user_entities(user_id):
     return (
         Entity.query.join(Conversation, Entity.conversation_id == Conversation.id)
         .filter(Conversation.user_id == user_id)
-        .order_by(Entity.created_at.desc())
+        .order_by(Entity.updated_at.desc(), Entity.created_at.desc())
         .all()
     )
 
@@ -69,9 +69,7 @@ def get_user_summaries_by_conversation(conversation_id):
         return []
 
     return (
-        Summary.query.join(
-            Conversation, Summary.conversation_id == Conversation.id
-        )
+        Summary.query.join(Conversation, Summary.conversation_id == Conversation.id)
         .filter(Conversation.user_id == conversation.user_id)
         .order_by(Summary.updated_at.desc())
         .all()

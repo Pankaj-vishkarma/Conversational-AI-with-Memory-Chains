@@ -5,8 +5,7 @@ from services.memory_service import (
     get_user_summaries_by_conversation,
     BUFFER_MESSAGE_LIMIT,
 )
-from services.entity_service import get_entities
-from services.graph_service import get_user_graph_context_by_conversation
+from services.graph_service import get_user_graph_context
 from services.llm_service import get_chat_model, generate_response
 from services.persona_service import get_persona
 from models.conversation import Conversation
@@ -141,6 +140,10 @@ def _infer_fact_label_value(name, description):
         parts = [p for p in raw_name.replace(".", " ").split() if p]
         if len(parts) >= 2:
             return "name", raw_name
+        if raw_name[0].isupper() and raw_name.isalpha():
+            return "name", raw_name
+        if raw_desc.strip().lower() in {"person", "human", "individual"}:
+            return "name", raw_name
 
     if _contains_any(combined, ["prefer", "preference", "likes", "favorite"]):
         if raw_name.lower() in ["preference", "preferred language", "preferred stack"]:
@@ -194,13 +197,15 @@ def _infer_fact_label_value(name, description):
 
 def _format_user_facts_for_prompt(facts):
     """
-    Convert labeled fact tuples into prompt-safe markdown list.
+    Convert labeled fact tuples into prompt-safe text.
     """
     if not facts:
         return "None"
-    return "\n".join(
-        [f"* You told me your {label} is {value}." for label, value in facts]
-    )
+    formatted = []
+    for label, value in facts:
+        clean_label = label.replace("_", " ").title()
+        formatted.append(f"User {clean_label}: {value}")
+    return "\n".join(formatted)
 
 
 def _rewrite_identity_confusions(response_text):
@@ -271,72 +276,69 @@ def _fit_recent_messages(
 
 def get_merged_entities(conversation_id):
     """
-    Fetch conversation entities + cross-session global entities for the same user.
+    Fetch merged entities for the same user across all conversations.
     Deduplicate by normalized entity name and keep the latest update.
+    Strictly prioritize latest value for each fact label.
     """
-    merged = {}
-
     try:
         conversation = Conversation.query.filter_by(id=conversation_id).first()
         if not conversation:
-            fallback = get_entities(conversation_id)
-            return [], fallback
+            return [], []
 
         all_entities = get_user_entities_by_conversation(conversation_id)
 
+        # Step 1: Merge by normalized entity name (keep latest by timestamp)
+        merged_by_name = {}
         for entity in all_entities:
-            is_current_conversation = entity.conversation_id == conversation_id
+            if not entity or not entity.name:
+                continue
 
             key = (entity.name or "").strip().lower()
             if not key:
                 continue
 
-            existing = merged.get(key)
-            if not existing:
-                merged[key] = {
+            entity_ts = entity.updated_at or entity.created_at
+            existing = merged_by_name.get(key)
+            # Keep if: no existing entry OR new entry has a later timestamp
+            if not existing or (entity_ts and entity_ts > existing.get("updated_at")):
+                merged_by_name[key] = {
                     "name": entity.name.strip(),
                     "description": (entity.description or "").strip(),
-                    "updated_at": entity.created_at,
-                    "is_global": not is_current_conversation,
-                }
-                continue
-
-            existing_ts = existing.get("updated_at")
-            entity_ts = entity.created_at
-            if existing_ts is None or (entity_ts and entity_ts > existing_ts):
-                merged[key] = {
-                    "name": entity.name.strip(),
-                    "description": (entity.description or "").strip(),
-                    "updated_at": entity.created_at,
-                    "is_global": not is_current_conversation,
+                    "updated_at": entity_ts,
                 }
 
+        # Step 2: Merge by fact label (infer labels from name+description)
+        # Map each label to its latest value across all entities
         labeled_user_facts = {}
         conversation_context = []
-        for item in merged.values():
+
+        for item in merged_by_name.values():
             raw_name = item["name"]
             raw_desc = item["description"]
             line = f"{raw_name}: {raw_desc}"
 
             label, value = _infer_fact_label_value(raw_name, raw_desc)
-            if item["is_global"] and label and value:
+            if label and value:
                 existing = labeled_user_facts.get(label)
-                if (
-                    not existing
-                    or existing["updated_at"] is None
-                    or (
-                        item["updated_at"] is not None
-                        and item["updated_at"] > existing["updated_at"]
+                # Strict latest-value-wins: keep if no existing OR newer timestamp
+                if not existing or (
+                    item.get("updated_at")
+                    and (
+                        not existing.get("updated_at")
+                        or item["updated_at"] > existing["updated_at"]
                     )
                 ):
                     labeled_user_facts[label] = {
                         "value": value,
                         "updated_at": item["updated_at"],
                     }
+                # Skip adding to conversation_context if it's a labeled fact
                 continue
 
+            # Only add to conversation_context if not a recognized labeled fact
             conversation_context.append(line)
 
+        # Step 3: Return deduplicated results
         user_facts = [
             (label, payload["value"])
             for label, payload in sorted(
@@ -344,11 +346,17 @@ def get_merged_entities(conversation_id):
             )
         ]
         conversation_context.sort(key=lambda x: x.lower())
+
+        # Debug logging
+        if user_facts or conversation_context:
+            print(f"[DEBUG] Merged user facts: {user_facts}")
+            print(f"[DEBUG] Conversation context: {conversation_context}")
+
         return user_facts, conversation_context
 
-    except Exception:
-        fallback = get_entities(conversation_id)
-        return [], fallback
+    except Exception as e:
+        print(f"[ERROR] get_merged_entities: {str(e)}")
+        return [], []
 
 
 def _get_cross_session_summary(conversation_id, limit=3):
@@ -369,6 +377,7 @@ def build_context(conversation_id, intent, user_message):
     Kept for compatibility and fallback use.
     """
     context = []
+    conversation = Conversation.query.filter_by(id=conversation_id).first()
 
     effective_memory = _resolve_memory_strategy(conversation_id, intent, user_message)
 
@@ -400,10 +409,17 @@ def build_context(conversation_id, intent, user_message):
             context.append({"role": "system", "content": "\n\n".join(combined)})
 
     if effective_memory in {"kg", "hybrid"} or intent in ["analysis", "question"]:
-        graph = get_user_graph_context_by_conversation(conversation_id)
+        graph = get_user_graph_context(conversation.user_id if conversation else None)
         if graph:
             context.append(
-                {"role": "system", "content": "Relationships:\n" + "\n".join(graph)}
+                {
+                    "role": "system",
+                    "content": (
+                        "Relationships:\n"
+                        + "\n".join(graph)
+                        + "\n\nUse these relationships as factual context for user-related questions."
+                    ),
+                }
             )
 
     history = _fit_recent_messages(
@@ -521,6 +537,8 @@ Instructions:
 * If user-specific fact is missing, say: "I don't have that information yet".
 * Keep assistant and user identity separate. User facts must be referenced as user facts.
 * When citing remembered facts, use second-person phrasing ("you/your"), never first-person ("I/my").
+* Use the provided relationships and entity memory only as factual background.
+* Do not invent new relationships or facts that are not present in memory.
 * Otherwise answer normally.
 """
 
@@ -582,6 +600,7 @@ def run_conversation_chain(conversation_id, user_message):
 
     # MAIN LCEL FLOW
     if chat_model is not None and LCEL_AVAILABLE:
+        print("LCEL_CHAIN_RUNNING")
 
         def _seed_payload(_):
             return {
@@ -642,8 +661,10 @@ def run_conversation_chain(conversation_id, user_message):
             graph_context=RunnableLambda(
                 lambda payload: (
                     "\n".join(
-                        get_user_graph_context_by_conversation(
-                            payload["conversation_id"]
+                        get_user_graph_context(
+                            payload["conversation"].user_id
+                            if payload.get("conversation")
+                            else None
                         )
                     )
                     if payload["memory_flags"]["use_graph"]
@@ -687,11 +708,20 @@ def run_conversation_chain(conversation_id, user_message):
 
         # CRITICAL FIX (TRY-CATCH ADDED)
         try:
-            return chain.invoke(None)
+            print("LCEL_CHAIN_RUNNING")
+            result = chain.invoke(None)
+            if isinstance(result, dict):
+                return _rewrite_identity_confusions(
+                    str(result.get("content") or result.get("error") or result)
+                )
+            return _rewrite_identity_confusions(
+                str(result or "I'm sorry, I couldn't answer that right now.")
+            )
         except Exception as e:
             print("[CHAIN ERROR]:", str(e))
 
     # FALLBACK FLOW (UNCHANGED LOGIC)
+    print("FALLBACK_RUNNING")
     intent = classify_intent(user_message)
 
     fallback_messages = [
@@ -716,4 +746,12 @@ def run_conversation_chain(conversation_id, user_message):
     fallback_messages.append({"role": "user", "content": user_message})
 
     response = generate_response(fallback_messages)
-    return _rewrite_identity_confusions(response)
+    if isinstance(response, dict):
+        response = (
+            response.get("content")
+            or response.get("error")
+            or "I'm sorry, I couldn't answer that right now."
+        )
+    return _rewrite_identity_confusions(
+        str(response or "I'm sorry, I couldn't answer that right now.")
+    )

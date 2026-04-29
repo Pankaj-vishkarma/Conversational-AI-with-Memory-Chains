@@ -8,14 +8,13 @@ from groq import Groq
 
 try:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-    from langchain_openai import ChatOpenAI
     from langchain_groq import ChatGroq
 
     LANGCHAIN_AVAILABLE = True
 except Exception as exc:  # pragma: no cover - import guard
     LANGCHAIN_AVAILABLE = False
     AIMessage = HumanMessage = SystemMessage = None  # type: ignore
-    ChatOpenAI = ChatGroq = None  # type: ignore
+    ChatGroq = None  # type: ignore
 
 
 DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"

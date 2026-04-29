@@ -42,6 +42,7 @@ def _has_meaningful_content(text):
 
 
 def _contains_personal_info(text):
+    print("API HIT")
     lowered = (text or "").lower()
     return any(marker in lowered for marker in PERSONAL_INFO_MARKERS)
 
@@ -117,9 +118,11 @@ def send_message():
 
         app = current_app._get_current_object()
         is_memory_instruction = _contains_memory_instruction(user_message)
-        should_extract_memory = _has_meaningful_content(
-            user_message
-        ) or _contains_personal_info(user_message) or is_memory_instruction
+        should_extract_memory = (
+            _has_meaningful_content(user_message)
+            or _contains_personal_info(user_message)
+            or is_memory_instruction
+        )
         message_count = len(get_conversation_messages(conversation_id))
         should_update_summary = (
             message_count >= SUMMARY_TRIGGER_COUNT
@@ -134,13 +137,16 @@ def send_message():
                         entities = extract_entities_from_text(user_message)
                         if is_memory_instruction and not entities:
                             note_text = _extract_memory_note(user_message)
-                            entities = [{"name": "memory_note", "description": note_text}]
+                            entities = [
+                                {"name": "memory_note", "description": note_text}
+                            ]
                         print("Extracted entities:", entities)
                         if entities:
                             save_entities(conversation_id, entities)
-                            triples = extract_triples(user_message)
-                            if triples:
-                                save_triples(conversation_id, triples)
+
+                        triples = extract_triples(user_message)
+                        if triples:
+                            save_triples(conversation_id, triples)
 
                     if should_update_summary:
                         update_summary(conversation_id)

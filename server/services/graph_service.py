@@ -155,6 +155,39 @@ def _is_meaningful_triple(subject, predicate, obj):
     return True
 
 
+def _coerce_triple_fields(triple):
+    if isinstance(triple, dict):
+        return triple.get("subject"), triple.get("predicate"), triple.get("object")
+    return (
+        getattr(triple, "subject", None),
+        getattr(triple, "predicate", None),
+        getattr(triple, "object", None),
+    )
+
+
+def _clean_triples(raw_triples):
+    cleaned = []
+    seen = set()
+
+    for triple in raw_triples or []:
+        subject, predicate, obj = _coerce_triple_fields(triple)
+        subject = _normalize_entity(subject)
+        predicate = _normalize_predicate(predicate)
+        obj = _normalize_entity(obj)
+
+        if not _is_meaningful_triple(subject, predicate, obj):
+            continue
+
+        key = (subject.lower(), predicate.lower(), obj.lower())
+        if key in seen:
+            continue
+
+        seen.add(key)
+        cleaned.append({"subject": subject, "predicate": predicate, "object": obj})
+
+    return cleaned
+
+
 class ExtractedTriple(BaseModel):
     subject: str = Field(..., description="Subject entity of the fact")
     predicate: str = Field(
@@ -168,6 +201,7 @@ class TripleExtractionResult(BaseModel):
 
 
 def extract_triples(text):
+    print("GRAPH_EXTRACTION_START")
     """
     Extract subject-predicate-object triples using LangChain structured output.
     """
@@ -181,7 +215,7 @@ def extract_triples(text):
                     "content": (
                         "Extract relationships as triples. "
                         "Only include factual, meaningful relationships "
-                        "(e.g. works_at, likes, lives_in, prefers, owns). "
+                        "(for example works_at, likes, lives_in, prefers, owns). "
                         "Do NOT include vague conversational triples like "
                         "(user, said, hello). "
                         'Return ONLY valid JSON in this format: {"triples":[{"subject":"","predicate":"","object":""}]}'
@@ -195,8 +229,11 @@ def extract_triples(text):
             if not isinstance(data, dict):
                 return []
 
-            triples = data.get("triples", [])
-            return triples if isinstance(triples, list) else []
+            raw_triples = data.get("triples", [])
+            if not isinstance(raw_triples, list):
+                return []
+
+            return _clean_triples(raw_triples)
 
         except Exception as e:
             print(f"[ERROR] fallback triple extraction: {str(e)}")
@@ -237,16 +274,8 @@ def extract_triples(text):
         chain = prompt | chat_model.with_structured_output(TripleExtractionResult)
         parsed = chain.invoke({"text": text})
 
-        triples = parsed.triples if parsed else []
-
-        return [
-            {
-                "subject": item.subject,
-                "predicate": item.predicate,
-                "object": item.object,
-            }
-            for item in triples
-        ]
+        raw_triples = parsed.triples if parsed else []
+        return _clean_triples(raw_triples)
 
     except Exception as exc:
         print(f"[WARNING] structured triple extraction failed → fallback: {exc}")
@@ -273,6 +302,15 @@ def save_triples(conversation_id, triples):
                 continue
             seen.add(key)
 
+            existing = KGTriple.query.filter_by(
+                conversation_id=conversation_id,
+                subject=subject,
+                predicate=predicate,
+                object=obj,
+            ).first()
+            if existing:
+                continue
+
             new_triple = KGTriple(
                 subject=subject,
                 predicate=predicate,
@@ -291,30 +329,31 @@ def save_triples(conversation_id, triples):
 
 def get_graph_context(conversation_id):
     """
-    Convert triples to prompt text
+    Convert user-level triples to prompt text.
     """
 
     try:
-        triples = KGTriple.query.filter_by(conversation_id=conversation_id).all()
+        conversation = Conversation.query.filter_by(id=conversation_id).first()
+        if not conversation:
+            return []
 
-        return [f"{t.subject} {t.predicate} {t.object}" for t in triples]
+        return get_user_graph_context(conversation.user_id)
 
     except Exception as e:
         print(f"[ERROR] get_graph_context: {str(e)}")
         return []
 
 
-def get_user_graph_context_by_conversation(conversation_id):
-    try:
-        conversation = Conversation.query.filter_by(id=conversation_id).first()
-        if not conversation:
-            return []
+def get_user_graph_context(user_id):
+    if not user_id:
+        return []
 
+    try:
         triples = (
             KGTriple.query.join(
                 Conversation, KGTriple.conversation_id == Conversation.id
             )
-            .filter(Conversation.user_id == conversation.user_id)
+            .filter(Conversation.user_id == user_id)
             .order_by(KGTriple.created_at.asc())
             .all()
         )
@@ -322,12 +361,21 @@ def get_user_graph_context_by_conversation(conversation_id):
         return [f"{t.subject} {t.predicate} {t.object}" for t in triples]
 
     except Exception as e:
-        print(f"[ERROR] get_user_graph_context_by_conversation: {str(e)}")
+        print(f"[ERROR] get_user_graph_context: {str(e)}")
         return []
 
 
 def get_graph_payload(conversation_id):
-    triples = KGTriple.query.filter_by(conversation_id=conversation_id).all()
+    conversation = Conversation.query.filter_by(id=conversation_id).first()
+    if not conversation:
+        return {"nodes": [], "edges": [], "triples": []}
+
+    triples = (
+        KGTriple.query.join(Conversation, KGTriple.conversation_id == Conversation.id)
+        .filter(Conversation.user_id == conversation.user_id)
+        .order_by(KGTriple.created_at.asc())
+        .all()
+    )
     node_map = {}
     links = []
 

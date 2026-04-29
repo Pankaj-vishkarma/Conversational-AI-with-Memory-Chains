@@ -123,6 +123,7 @@ def _coerce_entity_fields(entity):
 
 
 def extract_entities_from_text(text):
+    print("ENTITY_EXTRACTION_START")
     """
     Use LangChain structured output to extract entities from user text.
     """

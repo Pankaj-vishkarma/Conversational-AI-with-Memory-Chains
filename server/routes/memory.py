@@ -7,12 +7,11 @@ import tiktoken
 
 from services.llm_service import generate_response
 from services.memory_service import build_buffer_memory, get_summary
-from services.entity_service import get_entities
+from services.chain_service import get_merged_entities
 from services.graph_service import get_graph_context, get_graph_payload
 
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models.conversation import Conversation
-
 
 memory_bp = Blueprint("memory", __name__)
 
@@ -49,21 +48,26 @@ def get_entities_api(conversation_id):
         if not conversation:
             return jsonify({"error": "Unauthorized access"}), 403
 
-        entities = Entity.query.filter_by(conversation_id=conversation_id).all()
+        user_facts, merged_context = get_merged_entities(conversation_id)
+        entity_lines = [f"{label}: {value}" for label, value in user_facts]
+        entity_lines.extend(merged_context)
 
         return jsonify(
             {
                 "success": True,
                 "data": [
                     {
-                        "name": e.name,
-                        "type": _entity_type(e.name, e.description),
-                        "description": e.description,
-                        "updated_at": (
-                            e.updated_at.isoformat() if e.updated_at else None
+                        "name": line.split(":", 1)[0].strip() if ":" in line else line,
+                        "type": _entity_type(
+                            line.split(":", 1)[0].strip() if ":" in line else line,
+                            line.split(":", 1)[1].strip() if ":" in line else "",
                         ),
+                        "description": (
+                            line.split(":", 1)[1].strip() if ":" in line else ""
+                        ),
+                        "updated_at": None,
                     }
-                    for e in entities
+                    for line in entity_lines
                 ],
             }
         )
@@ -201,12 +205,16 @@ def compare_memory(conversation_id):
         summary_response = generate_response(summary_messages)
 
         # -------- ENTITY --------
-        entities = get_entities(conversation_id)
+        user_facts, merged_context = get_merged_entities(conversation_id)
+        entity_lines = [f"{label}: {value}" for label, value in user_facts]
+        entity_lines.extend(merged_context)
         entity_messages = [
             {"role": "system", "content": "Answer using known facts only."}
         ]
-        if entities:
-            entity_messages.append({"role": "system", "content": "\n".join(entities)})
+        if entity_lines:
+            entity_messages.append(
+                {"role": "system", "content": "\n".join(entity_lines)}
+            )
         entity_messages.append({"role": "user", "content": user_input})
         entity_response = generate_response(entity_messages)
 
@@ -228,11 +236,17 @@ def compare_memory(conversation_id):
             }
         ]
         if summary:
-            hybrid_messages.append({"role": "system", "content": f"Summary:\n{summary}"})
-        if entities:
-            hybrid_messages.append({"role": "system", "content": "Entities:\n" + "\n".join(entities)})
+            hybrid_messages.append(
+                {"role": "system", "content": f"Summary:\n{summary}"}
+            )
+        if entity_lines:
+            hybrid_messages.append(
+                {"role": "system", "content": "Entities:\n" + "\n".join(entity_lines)}
+            )
         if graph:
-            hybrid_messages.append({"role": "system", "content": "Graph:\n" + "\n".join(graph)})
+            hybrid_messages.append(
+                {"role": "system", "content": "Graph:\n" + "\n".join(graph)}
+            )
         hybrid_messages.extend(build_buffer_memory(conversation_id)[-5:])
         hybrid_messages.append({"role": "user", "content": user_input})
         hybrid_response = generate_response(hybrid_messages)
