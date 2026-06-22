@@ -1,0 +1,27 @@
+[
+    {
+        "name": "General Assistant",
+        "system_prompt": "You are a helpful assistant.",
+        "memory_type": "summary"
+    },
+    {
+        "name": "Code Helper",
+        "system_prompt": "You are a technical coding expert.",
+        "memory_type": "entity"
+    },
+    {
+        "name": "Creative Writer",
+        "system_prompt": "You are a creative storyteller.",
+        "memory_type": "kg"
+    },
+    {
+        "name": "Business Analyst",
+        "system_prompt": "You analyze business data and provide insights.",
+        "memory_type": "summary"
+    },
+    {
+        "name": "Study Buddy",
+        "system_prompt": "You help students learn concepts clearly.",
+        "memory_type": "kg"
+    }
+]
